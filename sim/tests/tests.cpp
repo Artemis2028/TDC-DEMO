@@ -70,15 +70,16 @@ TEST(broadside_roll_cuts_laser_damage) {
 }
 
 TEST(heat_locks_weapons_until_cool) {
-    // At 100 heat nothing fires; radiators bring it back down.
+    // At 100 heat nothing fires until the radiators bring it below 70.
     Battle b(2, 0);
     auto& me = const_cast<Ship&>(b.ships()[0]);
     me.heat = 100;
+    me.radiators_extended = true;
     b.step();
     CHECK(!b.ships()[0].laser_firing);
-    me.radiators_extended = true;
-    for (int i = 0; i < 50; ++i) b.step();
-    CHECK(b.ships()[0].heat < 100);
+    while (b.ships()[0].heat >= 70 && b.time() < 100) { b.step(); CHECK(!b.ships()[0].laser_firing); }
+    b.step();
+    CHECK(b.ships()[0].laser_firing);
 }
 
 TEST(repair_timer_varies_and_stays_in_bounds) {
@@ -103,6 +104,7 @@ TEST(repair_restores_to_sixty_and_teams_are_limited) {
     Battle b(4, 0);
     auto& me = const_cast<Ship&>(b.ships()[0]);
     const_cast<Ship&>(b.ships()[1]).weapons_free = false;
+    b.set_auto_repair(0, false);
     for (int s = 0; s < kSys; ++s) if (s != static_cast<int>(Sys::Gun)) me.health[s] = 10;
     int teams = me.repair_teams();   // 1 + 40/15 = 3
     CHECK(teams == 3);

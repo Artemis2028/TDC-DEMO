@@ -1,0 +1,8 @@
+[configuration]
+entry_symbol = "tdc_demo_init"
+compatibility_minimum = "4.5"
+reloadable = false
+
+[libraries]
+linux.x86_64 = "res://bin/libtdc_demo.so"
+windows.x86_64 = "res://bin/tdc_demo.dll"
