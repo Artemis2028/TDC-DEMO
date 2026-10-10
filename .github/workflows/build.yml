@@ -1,0 +1,48 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      GODOT: 4.7-stable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build the rules sim, its tests and the Godot extension
+        run: |
+          cmake -S . -B build
+          cmake --build build --config Release -j 4
+          ctest --test-dir build -C Release --output-on-failure
+
+      - name: Fetch Godot and its export templates
+        shell: pwsh
+        run: |
+          $v = "$env:GODOT"
+          Invoke-WebRequest "https://github.com/godotengine/godot/releases/download/$v/Godot_v${v}_win64.exe.zip" -OutFile godot.zip
+          Expand-Archive godot.zip -DestinationPath godot
+          Invoke-WebRequest "https://github.com/godotengine/godot/releases/download/$v/Godot_v${v}_export_templates.tpz" -OutFile templates.zip
+          Expand-Archive templates.zip -DestinationPath tpl
+          $dest = "$env:APPDATA\Godot\export_templates\$($v -replace '-', '.')"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Move-Item tpl\templates\* $dest
+
+      - name: Export the Windows build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force export | Out-Null
+          $g = (Get-ChildItem godot -Filter *console.exe -Recurse)[0].FullName
+          & $g --headless --path game --import
+          & $g --headless --path game --export-release "Windows Desktop" ../export/TDC-Demo.exe
+          Copy-Item LICENSE.txt export/
+          Get-ChildItem export
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TDC-Demo-windows
+          path: export/

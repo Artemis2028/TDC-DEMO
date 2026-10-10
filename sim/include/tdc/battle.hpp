@@ -93,6 +93,8 @@ struct Ship {
     bool out = false;
     std::string out_reason;
     double disarmed_for = 0;
+    bool overheated = false;      // set at 100 heat, cleared below 70: weapons locked meanwhile
+    bool holding_heat = false;    // AI heat discipline: laser held between 90 and 60
 
     int repair_teams() const;     // teams available in total (from crew)
     bool alive_sys(Sys s) const { return health[static_cast<int>(s)] > 0; }
@@ -156,6 +158,7 @@ public:
 
 private:
     void ai(Ship& s);
+    void auto_repair(Ship& s);
     void move(Ship& s);
     void fire(Ship& s);
     void land_shots();

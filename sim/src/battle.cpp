@@ -35,8 +35,8 @@ static ShipClass base_earth(const char* name) {
     c.accel = 0.30; c.turn_rate = 0.035;
     c.armor = {120, 40, 30}; c.structure = {160, 220, 160};
     c.placed = {Section::Aft, Section::Body, Section::Body, Section::Nose, Section::Body, Section::Body};
-    c.laser_dps = 2.5; c.laser_range = 150e3; c.laser_heat = 1.2;
-    c.drive_heat = 0.6; c.cool_extended = 2.4; c.cool_retracted = 0.7;
+    c.laser_dps = 2.5; c.laser_range = 150e3; c.laser_heat = 2.2;
+    c.drive_heat = 0.6; c.cool_extended = 2.7; c.cool_retracted = 0.6;
     c.crew = 40;
     c.repair_base = {60, 45, 50, 40, 35, 70};
     return c;
@@ -48,7 +48,7 @@ ShipClass lance_class() {
     ShipClass c = base_earth("Lance");
     c.accel = 0.26; c.turn_rate = 0.03;
     c.gun = GunKind::Coilgun;
-    c.gun_damage = 42; c.gun_reload = 18; c.gun_speed = 12e3; c.gun_range = 100e3; c.gun_heat = 9;
+    c.gun_damage = 46; c.gun_reload = 18; c.gun_speed = 12e3; c.gun_range = 100e3; c.gun_heat = 9;
     c.ammo = 60;
     c.laser_dps = 1.4;
     return c;
@@ -216,7 +216,7 @@ bool Battle::order_repair(int ship, Sys s) {
 void Battle::step() {
     if (winner_ >= 0) return;
     for (auto& s : ships_) if (!s.out && s.ai_controlled) ai(s);
-    for (auto& s : ships_) if (!s.out) { move(s); fire(s); heat(s); repairs(s); }
+    for (auto& s : ships_) if (!s.out) { if (s.auto_repair) auto_repair(s); move(s); fire(s); heat(s); repairs(s); }
     land_shots();
     for (auto& s : ships_) if (!s.out) check_out(s);
     time_ += kDt;
@@ -236,21 +236,22 @@ void Battle::ai(Ship& s) {
     double hold = s.cls.gun != GunKind::None && s.alive_sys(Sys::Gun) && s.ammo > 0 ? 0.8 * s.cls.gun_range : 0.6 * s.cls.laser_range;
     Burn want = r > hold ? Burn::Toward : (closing(s.id, e) > 20 ? Burn::Stop : Burn::Off);
     if (want != s.burn) { s.burn = want; s.throttle = 1; }
-    // Radiators out when hot, in when cool and under fire.
-    bool hot = s.heat > 55;
-    if (hot != s.radiators_extended) s.radiators_extended = hot;
-    if (s.auto_repair) {
-        // Worst system first.
-        while (static_cast<int>(s.repairs.size()) < s.repair_teams()) {
-            int worst = -1; double h = 100;
-            for (int k = 0; k < kSys; ++k) {
-                if (k == static_cast<int>(Sys::Gun) && s.cls.gun == GunKind::None) continue;
-                bool busy = false;
-                for (const auto& rp : s.repairs) busy |= static_cast<int>(rp.sys) == k;
-                if (!busy && s.health[k] < h && s.health[k] < 80) { h = s.health[k]; worst = k; }
-            }
-            if (worst < 0 || !order_repair(s.id, static_cast<Sys>(worst))) break;
+    // Radiators out once heat builds, folded away only when nearly cold (they are a target while out).
+    if (s.heat > 25) s.radiators_extended = true;
+    else if (s.heat < 8) s.radiators_extended = false;
+}
+
+void Battle::auto_repair(Ship& s) {
+    // Worst system first, as many jobs as there are free teams.
+    while (static_cast<int>(s.repairs.size()) < s.repair_teams()) {
+        int worst = -1; double h = 100;
+        for (int k = 0; k < kSys; ++k) {
+            if (k == static_cast<int>(Sys::Gun) && s.cls.gun == GunKind::None) continue;
+            bool busy = false;
+            for (const auto& rp : s.repairs) busy |= static_cast<int>(rp.sys) == k;
+            if (!busy && s.health[k] < h && s.health[k] < 80) { h = s.health[k]; worst = k; }
         }
+        if (worst < 0 || !order_repair(s.id, static_cast<Sys>(worst))) break;
     }
 }
 
@@ -302,7 +303,13 @@ Section Battle::hit_section(const Ship& t, Sys aim, const Ship& from) const {
 void Battle::fire(Ship& s) {
     s.laser_firing = false;
     int e = enemy_of(s);
-    if (e < 0 || !s.weapons_free || s.heat >= 100) return;
+    if (s.heat >= 100) s.overheated = true;
+    if (s.heat < 70) s.overheated = false;
+    if (e < 0 || !s.weapons_free || s.overheated) return;
+    if (s.ai_controlled) {
+        if (s.heat > 90) s.holding_heat = true;
+        if (s.heat < 60) s.holding_heat = false;
+    } else s.holding_heat = false;
     Ship& t = ships_[e];
     double r = range(s.id, e);
     double q = sensor_quality(s.id, e);
@@ -314,7 +321,7 @@ void Battle::fire(Ship& s) {
     if (aim == Sys::Radiators && !t.radiators_extended) aim = Sys::Count;   // nothing outside to hit
     bool rolling = s.facing == Facing::Broadside;
 
-    if (s.alive_sys(Sys::Laser) && r <= 3 * s.cls.laser_range) {
+    if (s.alive_sys(Sys::Laser) && r <= 3 * s.cls.laser_range && !s.holding_heat) {
         double fall = r <= s.cls.laser_range ? 1.0 : (s.cls.laser_range / r) * (s.cls.laser_range / r);
         double dps = s.cls.laser_dps * fall * (s.health[static_cast<int>(Sys::Laser)] / 100.0) * (0.5 + 0.5 * q);
         if (rolling) dps *= 0.7;                                  // own hull blocks the turret part of each turn
@@ -423,7 +430,7 @@ void Battle::heat(Ship& s) {
         if (rnd() < 0.02) { s.crew = std::max(0, s.crew - 1); }
         s.heat = std::min(s.heat, 130.0);
     }
-    if (before < 100 && s.heat >= 100) log(s.id, "overheat", s.name + ": overheating, weapons locked until it cools");
+    if (before < 100 && s.heat >= 100) log(s.id, "overheat", s.name + ": overheating, weapons locked until heat drops below 70");
 }
 
 void Battle::repairs(Ship& s) {

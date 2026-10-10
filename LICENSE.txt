@@ -1,0 +1,12 @@
+TDC Demo
+Copyright (c) 2026 Rafael. All rights reserved.
+
+This demo is provided free of charge for personal, non-commercial play.
+
+You may not:
+  - copy, redistribute, sell, rent or sublicense the demo or any part of it;
+  - decompile, disassemble, reverse engineer or otherwise attempt to derive the source code, rules, data or
+    algorithms of the demo, except to the extent that applicable law expressly permits it;
+  - modify the demo or create derivative works from it.
+
+The demo is provided "as is", without warranty of any kind.
