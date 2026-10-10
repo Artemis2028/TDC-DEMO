@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.20)
+project(tdc_demo CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+add_library(tdc_sim STATIC sim/src/battle.cpp)
+target_include_directories(tdc_sim PUBLIC sim/include)
+
+option(TDC_TESTS "Build the rules tests" ON)
+if(TDC_TESTS)
+  enable_testing()
+  add_executable(tdc_tests sim/tests/tests.cpp)
+  target_link_libraries(tdc_tests tdc_sim)
+  add_test(NAME rules COMMAND tdc_tests)
+endif()

@@ -1,0 +1,6 @@
+build/
+build-*/
+game/.godot/
+game/bin/
+*.import
+export/
