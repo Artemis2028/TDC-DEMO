@@ -15,6 +15,9 @@ var plume: MeshInstance3D
 var pods: Array = []                  # OMS pods: [outward direction, radial jet, axial jet]
 var turrets: Array = []               # [pivot (barrel along its -Z), muzzle, outward direction, ball, barrel]
 const TURRET_ANGLES := [deg_to_rad(45.0), deg_to_rad(165.0), deg_to_rad(290.0)]
+const OMS_FWD := 0.10      # OMS stations, as fractions of the length from the nose
+const OMS_AFT := 0.80
+const OMS_R := 2.3         # pod centres sit this many hull radii out from the axis
 var _rad_open := 1.0
 var _grid: ImageTexture
 
@@ -65,48 +68,74 @@ func build(is_mars: bool, gun_kind: int) -> void:
 	_radiator_pair(0.27, PI / 2, 0.14, 0.035, dark)
 	_radiator_pair(0.57, PI / 2, 0.40, 0.085, dark)
 	_radiator_pair(0.70, PI / 2 + 0.95, 0.30, 0.11, bronze)
-	# --- laser turrets: three raised mounts around the hull amidships, between the radiator panels.
+	# --- laser turrets: three raised barbettes around the hull amidships, between the radiator panels. Each is a
+	# clean drum with a marking ring and a rotating dome; the emitter is a short lens tube in the dome.
 	# Angles match the sim (kTurretAngle): measured about the axis from the ship's right (+X) toward its top (+Y).
-	var lens_col := Color(0.3, 0.6, 0.9) if not mars else Color(0.95, 0.5, 0.25)
+	var lens_col := Color(0.35, 0.65, 1.0) if not mars else Color(1.0, 0.55, 0.3)
+	var drum_mat := _mat(Color(0.7, 0.72, 0.75) if not mars else Color(0.7, 0.6, 0.5), 1)
+	var ring_mat := StandardMaterial3D.new()
+	ring_mat.albedo_color = Color(0.86, 0.7, 0.18)
 	for k in TURRET_ANGLES.size():
 		var a: float = TURRET_ANGLES[k]
 		var out := Vector3(cos(a), sin(a), 0)
-		var mount := Node3D.new()
-		mount.position = out * r * 1.0 + Vector3(0, 0, _z(0.40))
-		add_child(mount)
-		var post := MeshInstance3D.new()
-		var pm0 := CylinderMesh.new()
-		pm0.top_radius = r * 0.22
-		pm0.bottom_radius = r * 0.3
-		pm0.height = r * 0.5
-		post.mesh = pm0
-		post.material_override = _mat(Color(0.45, 0.47, 0.5), 1)
-		post.transform = Transform3D(Basis(Quaternion(Vector3.UP, out)), out * r * 0.25)
-		mount.add_child(post)
+		var base := out * r * 0.85 + Vector3(0, 0, _z(0.40))
+		var drum := MeshInstance3D.new()
+		var dm := CylinderMesh.new()
+		dm.top_radius = r * 0.40
+		dm.bottom_radius = r * 0.46
+		dm.height = r * 0.55
+		drum.mesh = dm
+		drum.material_override = drum_mat
+		drum.transform = Transform3D(_basis_y(out), base + out * r * 0.27)
+		add_child(drum)
+		var ring := MeshInstance3D.new()
+		var rm := CylinderMesh.new()
+		rm.top_radius = r * 0.415
+		rm.bottom_radius = r * 0.415
+		rm.height = r * 0.06
+		ring.mesh = rm
+		ring.material_override = ring_mat
+		ring.transform = Transform3D(_basis_y(out), base + out * r * 0.45)
+		add_child(ring)
 		var piv := Node3D.new()
-		piv.position = out * r * 0.55
-		mount.add_child(piv)
-		var ball := MeshInstance3D.new()
+		piv.position = base + out * r * 0.55
+		add_child(piv)
+		var dome := MeshInstance3D.new()
 		var sm := SphereMesh.new()
-		sm.radius = r * 0.42
-		sm.height = r * 0.84
-		ball.mesh = sm
-		ball.material_override = _mat(Color(0.55, 0.58, 0.62), 1)
-		piv.add_child(ball)
-		var barrel := MeshInstance3D.new()
+		sm.radius = r * 0.36
+		sm.height = r * 0.72
+		dome.mesh = sm
+		dome.material_override = _mat(Color(0.82, 0.84, 0.86) if not mars else Color(0.78, 0.68, 0.58), 1)
+		piv.add_child(dome)
+		var tube := MeshInstance3D.new()
 		var cm := CylinderMesh.new()
-		cm.top_radius = r * 0.13
-		cm.bottom_radius = r * 0.18
-		cm.height = r * 1.3
-		barrel.mesh = cm
-		barrel.rotation.x = -PI / 2
-		barrel.position = Vector3(0, 0, -r * 0.65)
-		barrel.material_override = _mat(lens_col, 1)
-		piv.add_child(barrel)
+		cm.top_radius = r * 0.17
+		cm.bottom_radius = r * 0.17
+		cm.height = r * 0.5
+		tube.mesh = cm
+		tube.rotation.x = -PI / 2
+		tube.position = Vector3(0, 0, -r * 0.3)
+		tube.material_override = _mat(Color(0.25, 0.27, 0.3), 1)
+		piv.add_child(tube)
+		var lens := MeshInstance3D.new()
+		var lm := CylinderMesh.new()
+		lm.top_radius = r * 0.13
+		lm.bottom_radius = r * 0.13
+		lm.height = r * 0.04
+		lens.mesh = lm
+		lens.rotation.x = -PI / 2
+		lens.position = Vector3(0, 0, -r * 0.56)
+		var lmat := StandardMaterial3D.new()
+		lmat.albedo_color = lens_col
+		lmat.emission_enabled = true
+		lmat.emission = lens_col
+		lmat.emission_energy_multiplier = 1.5
+		lens.material_override = lmat
+		piv.add_child(lens)
 		var mz := Node3D.new()
-		mz.position = Vector3(0, 0, -r * 1.3)
+		mz.position = Vector3(0, 0, -r * 0.6)
 		piv.add_child(mz)
-		turrets.append([piv, mz, out, ball, barrel])
+		turrets.append([piv, mz, out, dome, tube, lens])
 	# --- spinal gun along the belly, muzzle just aft of the sensor bulb
 	if gun_kind != 0:
 		var gm := _mat(Color(0.62, 0.55, 0.42), 1)
@@ -122,19 +151,42 @@ func build(is_mars: bool, gun_kind: int) -> void:
 		else:
 			_rod(Vector3(r * 0.22, y, _z(0.08)), Vector3(r * 0.22, y, _z(0.70)), r * 0.09, gm)
 			_rod(Vector3(-r * 0.22, y, _z(0.08)), Vector3(-r * 0.22, y, _z(0.70)), r * 0.09, gm)
-	# --- OMS pods: four thruster blocks around the hull near the middle, so they push without turning the ship
-	var pod_mat := _mat(Color(0.42, 0.44, 0.47), 1)
-	for k in 4:
-		var a := k * PI / 2
-		var out := Vector3(cos(a), sin(a), 0)
-		var pod := MeshInstance3D.new()
-		var bm := BoxMesh.new()
-		bm.size = Vector3(r * 0.7, r * 0.7, r * 1.2)
-		pod.mesh = bm
-		pod.material_override = pod_mat
-		pod.position = out * r * 1.25 + Vector3(0, 0, _z(0.48))
-		add_child(pod)
-		pods.append([out, _jet(r), _jet(r)])
+	# --- OMS pods: thruster clusters on short booms at a forward and an aft station, so together they push the ship
+	# without turning it. Forward pods fire forward (to slow), aft pods fire aft, and both fire outward for sideways
+	# moves: no jet ever runs along the hull past the turrets or radiators.
+	var pod_mat := _mat(Color(0.78, 0.8, 0.82) if not mars else Color(0.72, 0.62, 0.52), 1)
+	var boom_mat := _mat(Color(0.4, 0.42, 0.45), 1)
+	var noz_mat := StandardMaterial3D.new()
+	noz_mat.albedo_color = Color(0.2, 0.2, 0.22)
+	noz_mat.metallic = 0.6
+	for st in [OMS_FWD, OMS_AFT]:
+		for k in 4:
+			var a := PI / 4 + k * PI / 2
+			var out := Vector3(cos(a), sin(a), 0)
+			var c := out * r * OMS_R + Vector3(0, 0, _z(st))
+			_rod(out * r * 0.9 + Vector3(0, 0, _z(st)), c, r * 0.18, boom_mat)
+			var ball := MeshInstance3D.new()
+			var sm := SphereMesh.new()
+			sm.radius = r * 0.42
+			sm.height = r * 0.84
+			ball.mesh = sm
+			ball.material_override = pod_mat
+			ball.position = c
+			add_child(ball)
+			# nozzles: one outward, one along the axis (forward on the forward pods, aft on the aft pods)
+			var axial := Vector3(0, 0, -1 if st == OMS_FWD else 1)
+			for d in [out, axial]:
+				var nz := MeshInstance3D.new()
+				var nm := CylinderMesh.new()
+				nm.top_radius = r * 0.16
+				nm.bottom_radius = r * 0.08
+				nm.height = r * 0.22
+				nm.cap_top = false
+				nz.mesh = nm
+				nz.material_override = noz_mat
+				nz.transform = Transform3D(_basis_y(d), c + d * r * 0.46)
+				add_child(nz)
+			pods.append([out, st, _jet(r), _jet(r)])
 	# --- drive plume
 	plume = MeshInstance3D.new()
 	var pm := CylinderMesh.new()
@@ -183,30 +235,33 @@ static func _basis_y(dir: Vector3) -> Basis:
 	x = x.normalized()
 	return Basis(x, y, x.cross(y))
 
-## Show the OMS jets for a burn: exhaust (local, ship axes) is opposite to the push.
+## Show the OMS jets for a burn: exhaust (local, ship axes) is opposite to the push. Sideways: the pod facing the
+## exhaust direction at each station. Forward exhaust (slowing): the forward pods; aft exhaust: the aft pods.
 func _show_oms(exhaust: Vector3) -> void:
 	var r := 0.026 * length
 	var radial := Vector3(exhaust.x, exhaust.y, 0)
-	var best := -1
-	var best_dot := 0.3
+	var best := {}
 	for k in pods.size():
+		var st: float = pods[k][1]
 		var d: float = (pods[k][0] as Vector3).dot(radial.normalized()) if radial.length() > 0.2 else 0.0
-		if d > best_dot: best_dot = d; best = k
+		if d > 0.3 and d > float(best.get(st, [0.0, -1])[0]): best[st] = [d, k]
 	for k in pods.size():
 		var out: Vector3 = pods[k][0]
-		var base := out * r * 1.25 + Vector3(0, 0, _z(0.48))
-		var rj: MeshInstance3D = pods[k][1]
-		rj.visible = k == best
+		var st: float = pods[k][1]
+		var c := out * r * OMS_R + Vector3(0, 0, _z(st))
+		var rj: MeshInstance3D = pods[k][2]
+		rj.visible = best.has(st) and int(best[st][1]) == k
 		if rj.visible:
 			var dir := radial.normalized()
-			rj.scale = Vector3.ONE * clampf(radial.length(), 0.4, 1.0)
-			rj.transform = Transform3D(_basis_y(dir), base + out * r * 0.4 + dir * r * 2.75 * rj.scale.y).scaled_local(rj.scale)
-		var aj: MeshInstance3D = pods[k][2]
-		aj.visible = absf(exhaust.z) > 0.2
+			var sc := clampf(radial.length(), 0.4, 1.0)
+			rj.transform = Transform3D(_basis_y(dir), c + dir * r * (0.55 + 2.75 * sc)).scaled_local(Vector3.ONE * sc)
+		var aj: MeshInstance3D = pods[k][3]
+		var fwd_pod := st == OMS_FWD
+		aj.visible = (exhaust.z < -0.2 and fwd_pod) or (exhaust.z > 0.2 and not fwd_pod)
 		if aj.visible:
 			var dz := Vector3(0, 0, signf(exhaust.z))
 			var sc := clampf(absf(exhaust.z), 0.4, 1.0)
-			aj.transform = Transform3D(_basis_y(dz), base + dz * r * (0.6 + 2.75 * sc)).scaled_local(Vector3.ONE * sc)
+			aj.transform = Transform3D(_basis_y(dz), c + dz * r * (0.55 + 2.75 * sc)).scaled_local(Vector3.ONE * sc)
 
 ## Turn the turrets that bear toward a point in world space; the others park pointing forward along the hull.
 func aim(world_target: Vector3, bears: Array) -> void:
@@ -432,10 +487,10 @@ func show_state(s: Dictionary, delta: float) -> void:
 	var thp: PackedFloat64Array = s["turret_hp"]
 	for k in turrets.size():
 		var dead := thp[k] <= 0
-		(turrets[k][4] as MeshInstance3D).visible = not dead
+		(turrets[k][5] as MeshInstance3D).visible = not dead          # lens shattered
 		var bm := (turrets[k][3] as MeshInstance3D).material_override as StandardMaterial3D
-		if view_mode == 0:
-			bm.albedo_color = Color(0.25, 0.08, 0.05) if dead else Color(0.55, 0.58, 0.62)
+		if view_mode == 0 and dead:
+			bm.albedo_color = Color(0.22, 0.08, 0.05)                    # scorched dome
 
 ## Where turret k sits, in world space.
 func turret_position(k: int) -> Vector3:
