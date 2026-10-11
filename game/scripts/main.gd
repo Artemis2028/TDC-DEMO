@@ -113,6 +113,9 @@ func _ready() -> void:
 			"--class": ship_class = int(args[i + 1])
 			"--target": view_target = true
 			"--armor": armor_view = true
+			"--dist": dist = float(args[i + 1])
+			"--yaw": yaw = float(args[i + 1])
+			"--pitch": pitch = float(args[i + 1])
 			"--click":
 				var xy: PackedStringArray = args[i + 1].split(",")
 				shot_clicks.append(Vector2(float(xy[0]), float(xy[1])))
@@ -156,6 +159,13 @@ func _build_world() -> void:
 	mm.albedo_color = Color(0.46, 0.2, 0.09)
 	mm.roughness = 1.0
 	planet.material_override = mm
+	planet.layers = 4          # the fill light below skips the planet so its night side stays dark
+	var fill := DirectionalLight3D.new()
+	fill.light_energy = 0.4
+	fill.light_color = Color(0.75, 0.82, 0.95)
+	fill.light_cull_mask = 1 | 2
+	add_child(fill)
+	fill.look_at_from_position(Vector3.ZERO, Vector3(0.6, -0.5, -0.7), Vector3.UP)
 	add_child(planet)
 	lines = ImmediateMesh.new()
 	line_mat = StandardMaterial3D.new()
@@ -186,10 +196,10 @@ func _spawn_models() -> void:
 	var own: Dictionary = battle.get_ship(0)
 	var foe: Dictionary = battle.get_ship(1)
 	own_model = ShipModel.new()
-	own_model.build(false, int(own["gun"]) != 0)
+	own_model.build(false, int(own["gun"]))
 	add_child(own_model)
 	foe_model = ShipModel.new()
-	foe_model.build(true, int(foe["gun"]) != 0)
+	foe_model.build(true, int(foe["gun"]))
 	add_child(foe_model)
 
 # ------------------------------------------------------------------ battle flow
@@ -276,6 +286,8 @@ func _update_world(delta: float) -> void:
 	foe_model.view_mode = 1 if armor_view and view_target and battle.get_sensor_quality() > 0.5 else 0
 	own_model.show_state(own, delta)
 	foe_model.show_state(foe, delta)
+	own_model.aim(foe_model.global_position)
+	foe_model.aim(own_model.global_position)
 	planet.position = Vector3(0, -(MARS_R + ALT), 0)
 	# Camera: orbit (or chase) the ship in view; the view is rolled a little so the planet's limb runs across the lower left.
 	var target_node: Node3D = foe_model if view_target else own_model
@@ -293,9 +305,9 @@ func _update_world(delta: float) -> void:
 	lines.surface_begin(Mesh.PRIMITIVE_LINES, line_mat)
 	var any := false
 	if own["laser_firing"]:
-		_seg(own_model.position + Vector3(0, 6, 0), foe_model.position, Color(0.55, 0.85, 1.0, 0.9)); any = true
+		_seg(own_model.muzzle_position(), foe_model.position, Color(0.55, 0.85, 1.0, 0.9)); any = true
 	if foe["laser_firing"]:
-		_seg(foe_model.position, own_model.position, Color(1.0, 0.45, 0.25, 0.9)); any = true
+		_seg(foe_model.muzzle_position(), own_model.position, Color(1.0, 0.45, 0.25, 0.9)); any = true
 	for s in battle.get_shots():
 		var p := _sim_to_world(s["pos"], focus)
 		var dir := (foe_model.position - own_model.position).normalized() if int(s["shooter"]) == 0 else (own_model.position - foe_model.position).normalized()
@@ -996,12 +1008,12 @@ func _draw_overlay(c: Control) -> void:
 		for i in 6:
 			if i == 2 and int(own["gun"]) == 0: continue
 			if health[i] < 100 and (worst < 0 or health[i] < health[worst]): worst = i
-		if worst >= 0 and not cam.is_position_behind(own_model.position):
-			_callout(c, cam.unproject_position(own_model.position), "%s · %d%%" % [SYS_NAMES[worst].to_upper(), int(health[worst])], W.hp(health[worst]))
+		if worst >= 0 and not cam.is_position_behind(own_model.sys_position(worst)):
+			_callout(c, cam.unproject_position(own_model.sys_position(worst)), "%s · %d%%" % [SYS_NAMES[worst].to_upper(), int(health[worst])], W.hp(health[worst]))
 	else:
 		var ts: int = own["target_sys"]
-		if not cam.is_position_behind(foe_model.position):
-			_callout(c, cam.unproject_position(foe_model.position), "%s · %s" % [SYS_NAMES[ts].to_upper(), ("%d%%" % int(fh[ts])) if known else "??"], W.PRI)
+		if not cam.is_position_behind(foe_model.sys_position(ts)):
+			_callout(c, cam.unproject_position(foe_model.sys_position(ts)), "%s · %s" % [SYS_NAMES[ts].to_upper(), ("%d%%" % int(fh[ts])) if known else "??"], W.PRI)
 		# resolved components panel
 		var pr := Rect2(40, 80, 210, 30 + 6 * 18)
 		c.draw_rect(pr, W.PANEL)
