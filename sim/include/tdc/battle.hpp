@@ -27,6 +27,9 @@ struct Vec3 {
 enum class Sys : int { Drive, Laser, Gun, Sensors, Radiators, Crew, Count };
 constexpr int kSys = static_cast<int>(Sys::Count);
 enum class Section : int { Nose, Body, Aft, Count };
+/// The crew's own mark on an enemy system or turret: nothing yet, damaged but working, or judged knocked out.
+/// Fire control on the player's ship believes these marks, not the truth.
+enum class Mark : int { None, Degraded, Killed };
 constexpr int kSec = static_cast<int>(Section::Count);
 /// Armour panels: each section's armour is eight panels around the ship's axis (0 right, then every 45 deg toward the
 /// top: upper right, top, upper left, left, lower left, bottom, lower right), plus a centre panel on the nose cap and
@@ -139,6 +142,13 @@ struct Ship {
     bool main_firing = false;     // main drive lit this tick
     double oms_fwd = 0, oms_left = 0;   // OMS thrust this tick in ship axes (forward, left), 0 when idle
     int target_turret = -1;       // with target_sys Laser: which enemy turret to aim at (-1: whichever is exposed)
+    // What this ship's crew believes about its enemy: health estimates from the EO track (refreshed every few seconds,
+    // rounded to 10, sometimes well off) and the crew's own marks.
+    std::array<double, kSys> est{};
+    std::array<double, kTurrets> turret_est{};
+    double est_due = 0;
+    std::array<Mark, kSys> mark{};
+    std::array<Mark, kTurrets> turret_mark{};
 
     int repair_teams() const;     // teams available in total (from crew)
     bool alive_sys(Sys s) const { return health[static_cast<int>(s)] > 0; }
@@ -165,6 +175,8 @@ struct Assessment {
     int observer;        // ship whose crew makes the call
     std::string text;
     bool true_kill;      // whether it describes a real kill (for tests; the player never sees this)
+    Sys sys = Sys::Count;   // what it is about
+    int turret = -1;
 };
 
 struct Event {
@@ -196,6 +208,7 @@ public:
     void set_armed(int ship, bool laser, bool on);           // laser: all three turrets
     void set_turret_armed(int ship, int turret, bool on);
     void set_target_turret(int ship, int turret);           // -1 for any
+    void set_mark(int ship, Sys sys, int turret, Mark m);   // the crew's mark on an enemy system (turret >= 0: a laser turret)
     void set_fire_mode(int ship, FireMode m, Sys target);
     void set_facing(int ship, Facing f);
     void set_roll(int ship, int dir);                       // roll about the ship's axis: -1, 0 (stop) or +1; keeps the facing
@@ -239,8 +252,11 @@ private:
     int hit_panel(const Ship& t, Section sec, const Ship& from, bool gun);
     int enemy_of(const Ship& s) const;
     double rnd();
+    double est_rnd();                   // a separate stream for estimates, so watching never changes the battle
+    void update_estimates(Ship& s);
+    bool believed_alive(const Ship& s, const Ship& t, Sys sys) const;
     void log(int ship, const char* kind, std::string text);
-    void assess(int observer, const Ship& target, const std::string& part, bool destroyed, bool real);
+    void assess(int observer, const Ship& target, Sys sys, int turret, bool real);
     void release_assessments();
 
     std::vector<Ship> ships_;
@@ -249,6 +265,7 @@ private:
     std::vector<Assessment> pending_;   // enemy damage assessments waiting to be reported
     std::vector<Assessment> reported_;  // and those already reported
     std::uint64_t rng_;
+    std::uint64_t est_rng_;
     double time_ = 0, carry_ = 0;
     int speed_ = 2;
     std::string drop_reason_;

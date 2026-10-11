@@ -24,6 +24,10 @@ void DemoBattle::set_target_turret(int64_t k) { b_->set_target_turret(0, static_
 void DemoBattle::set_fire_mode(int64_t m, int64_t t) { b_->set_fire_mode(0, static_cast<tdc::FireMode>(m), static_cast<tdc::Sys>(t)); }
 void DemoBattle::set_facing(int64_t f) { b_->set_facing(0, static_cast<tdc::Facing>(f)); }
 void DemoBattle::set_roll(int64_t dir) { b_->set_roll(0, static_cast<int>(dir)); }
+void DemoBattle::set_mark(int64_t sys, int64_t turret, int64_t mark) {
+    if (sys < 0 || sys >= tdc::kSys || mark < 0 || mark > 2) return;
+    b_->set_mark(0, static_cast<tdc::Sys>(sys), static_cast<int>(turret), static_cast<tdc::Mark>(mark));
+}
 void DemoBattle::set_burn(int64_t burn, double th) { b_->set_burn(0, static_cast<tdc::Burn>(burn), th); }
 void DemoBattle::set_radiators(bool e) { b_->set_radiators(0, e); }
 bool DemoBattle::order_repair(int64_t s) { return b_->order_repair(0, static_cast<tdc::Sys>(s)); }
@@ -52,6 +56,14 @@ Dictionary DemoBattle::get_ship(int64_t i) const {
     PackedFloat64Array worst;
     for (int k = 0; k < tdc::kSec; ++k) worst.push_back(s.worst_panel(k));
     d["armor_worst"] = worst;   // thinnest panel per section: where a breach shows
+    // what this ship's crew believes about its enemy: estimated health (rounded to 10) and its own kill marks
+    PackedFloat64Array est, test;
+    PackedInt32Array mk, tmk;
+    for (double v : s.est) est.push_back(v);
+    for (double v : s.turret_est) test.push_back(v);
+    for (auto m : s.mark) mk.push_back(static_cast<int>(m));
+    for (auto m : s.turret_mark) tmk.push_back(static_cast<int>(m));
+    d["est"] = est; d["turret_est"] = test; d["mark"] = mk; d["turret_mark"] = tmk;
     d["health"] = health; d["armor"] = armor; d["armor_max"] = armor_max; d["structure"] = st; d["structure_max"] = st_max;
     d["hull"] = s.hull_fraction();
     d["radiators_extended"] = s.radiators_extended;
@@ -129,6 +141,7 @@ void DemoBattle::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_fire_mode", "mode", "target_sys"), &DemoBattle::set_fire_mode);
     ClassDB::bind_method(D_METHOD("set_facing", "facing"), &DemoBattle::set_facing);
     ClassDB::bind_method(D_METHOD("set_roll", "dir"), &DemoBattle::set_roll);
+    ClassDB::bind_method(D_METHOD("set_mark", "sys", "turret", "mark"), &DemoBattle::set_mark);
     ClassDB::bind_method(D_METHOD("set_burn", "burn", "throttle"), &DemoBattle::set_burn);
     ClassDB::bind_method(D_METHOD("set_radiators", "extended"), &DemoBattle::set_radiators);
     ClassDB::bind_method(D_METHOD("order_repair", "sys"), &DemoBattle::order_repair);

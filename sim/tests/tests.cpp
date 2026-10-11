@@ -417,6 +417,45 @@ TEST(enemy_kills_are_reported_as_probable_and_sometimes_wrongly) {
     CHECK(bad_delay == 0 && not_probable == 0);
 }
 
+TEST(enemy_health_is_an_estimate) {
+    // Our crew's figures for the enemy are rounded to 10, within the read error of the truth (5 + 25 x (1 - track)
+    // either way, plus 5 for the rounding), and held for 5 s between readings.
+    Battle b = placed(0);
+    auto& foe = const_cast<Ship&>(b.ships()[1]);
+    foe.weapons_free = false; foe.burn = Burn::Off; foe.ai_controlled = false; foe.vel = {0, 0};
+    const_cast<Ship&>(b.ships()[0]).weapons_free = false;   // nothing changes the truth while we look
+    foe.health = {100, 70, 40, 90, 10, 55};
+    double spread = 5.0 + 25.0 * (1.0 - b.sensor_quality(0, 1));
+    b.step();
+    auto first = b.ships()[0].est;
+    for (int k = 0; k < kSys; ++k) {
+        double e = first[static_cast<std::size_t>(k)];
+        CHECK(std::fabs(e / 10.0 - std::round(e / 10.0)) < 1e-12);
+        if (k != static_cast<int>(Sys::Gun)) CHECK(std::fabs(e - foe.health[static_cast<std::size_t>(k)]) <= spread + 5.0 + 1e-9);
+    }
+    for (int i = 0; i < 40; ++i) b.step();                       // 4 s later: same reading
+    CHECK(b.ships()[0].est == first);
+}
+
+TEST(a_killed_mark_moves_auto_fire_control_on) {
+    // Auto fire control goes for the enemy's lasers first. With all three turrets marked killed by our crew it moves on
+    // to the gun, whether or not the marks are right (here they are wrong: the turrets are untouched).
+    for (bool marked : {false, true}) {
+        Battle b = placed(0);
+        auto& foe = const_cast<Ship&>(b.ships()[1]);
+        foe.weapons_free = false; foe.burn = Burn::Off; foe.ai_controlled = false;
+        foe.heading = 3.14159265358979323846;
+        for (auto& sec : foe.panels) sec.fill(0);
+        foe.armor = {0, 0, 0};
+        foe.structure[0] = 0;                                    // nose shot through: the beam reaches amidships
+        if (marked) for (int k = 0; k < kTurrets; ++k) b.set_mark(0, Sys::Laser, k, Mark::Killed);
+        for (int i = 0; i < 50; ++i) b.step();
+        double turrets = foe.turret_hp[0] + foe.turret_hp[1] + foe.turret_hp[2];
+        if (marked) CHECK(turrets == 300 && foe.health[static_cast<int>(Sys::Gun)] < 100);
+        else CHECK(turrets < 300 && foe.health[static_cast<int>(Sys::Gun)] == 100);
+    }
+}
+
 int main() {
     for (auto& [name, fn] : registry()) { std::printf("%s\n", name); fn(); }
     std::printf(failures ? "%d FAILED\n" : "all passed\n", failures);
