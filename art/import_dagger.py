@@ -87,20 +87,10 @@ def main(save_blend):
             reparent_keep(c, piv)
         bpy.data.objects.remove(old, do_unlink=True)
         ri += 1
-    # service and crew panels: group their parts by the side they stand on
-    groups = {}
+    # the forward crew and service panels are left off for the demo (the drive wings do the cooling)
     for ob in list(bpy.data.objects):
         if ob.name.startswith(("Cold crew", "Hot service")):
-            p = ob.matrix_world.translation
-            ang = round(math.degrees(math.atan2(p.z, p.x)) / 90) % 4
-            groups.setdefault((ob.name.split()[0], ang), []).append(ob)
-    for (label, ang), obs in sorted(groups.items()):
-        a = math.radians(ang * 90)
-        p = Vector((9.5 * math.cos(a), ours(-42), 9.5 * math.sin(a)))
-        piv = new_empty(f"RadPivot{ri}", radial_frame(p))
-        for ob in obs:
-            reparent_keep(ob, piv)
-        ri += 1
+            bpy.data.objects.remove(ob, do_unlink=True)
 
     # --- a sloped bow: a smooth blunted ogive in place of the concept's short blunt bow, in the hull's paint, with
     # panel seams continuing the hull's (rings every 4 m, lengthwise lines every 30 degrees).
