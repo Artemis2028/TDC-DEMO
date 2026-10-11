@@ -5,3 +5,4 @@ game/bin/
 *.import
 export/
 *.blend1
+__pycache__/
