@@ -28,6 +28,7 @@ var cam: Camera3D
 var own_model: ShipModel
 var foe_model: ShipModel
 var planet: MeshInstance3D
+var sun: DirectionalLight3D
 var lines: ImmediateMesh
 var line_mat: StandardMaterial3D
 var yaw := 0.9
@@ -164,14 +165,36 @@ func _build_world() -> void:
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.3, 0.33, 0.4)
-	env.ambient_light_energy = 0.5
+	env.ambient_light_energy = 0.32
+	# Metal hull reflects the sky (stars, black) rather than a flat grey, so it reads as polished plate.
+	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 	env.tonemap_mode = Environment.TONE_MAPPER_AGX     # same view transform as the Blender renders
+	# Ambient occlusion: darkens creases where housings, rings and pods meet the hull (radius in metres).
+	env.ssao_enabled = true
+	env.ssao_radius = 3.0
+	env.ssao_intensity = 2.5
+	env.ssao_power = 1.6
+	env.ssao_detail = 0.5
+	# Bloom on anything brighter than white: drive plume, laser beams, hot radiators, lit muzzles.
+	env.glow_enabled = true
+	env.glow_hdr_threshold = 1.6
+	env.glow_intensity = 0.5
+	env.glow_bloom = 0.0
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_ADDITIVE
+	for lv in 7: env.set_glow_level(lv, lv in [2, 3, 4])
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
-	var sun := DirectionalLight3D.new()
-	sun.light_energy = 1.8
+	sun = DirectionalLight3D.new()
+	sun.light_energy = 2.2
 	sun.light_color = Color(1, 0.95, 0.88)
+	# Hard sunlight casts real shadows: radiator wings across the spine, housings on the hull.
+	sun.shadow_enabled = true
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	sun.directional_shadow_blend_splits = true
+	sun.shadow_bias = 0.04
+	sun.shadow_normal_bias = 1.2
+	sun.light_angular_distance = 0.53      # the Sun's disc seen from Mars orbit: slightly soft edges
 	add_child(sun)
 	sun.look_at_from_position(Vector3.ZERO, Vector3(-0.8, -0.25, 0.6), Vector3.UP)
 	planet = MeshInstance3D.new()
@@ -187,11 +210,18 @@ func _build_world() -> void:
 	planet.material_override = mm
 	planet.layers = 4          # the fill light below skips the planet so its night side stays dark
 	var fill := DirectionalLight3D.new()
-	fill.light_energy = 0.4
+	fill.light_energy = 0.25
 	fill.light_color = Color(0.75, 0.82, 0.95)
 	fill.light_cull_mask = 1 | 2
 	add_child(fill)
 	fill.look_at_from_position(Vector3.ZERO, Vector3(0.6, -0.5, -0.7), Vector3.UP)
+	# Mars-shine: the sunlit planet below lights the belly a faint rust colour.
+	var shine := DirectionalLight3D.new()
+	shine.light_energy = 0.35
+	shine.light_color = Color(0.85, 0.45, 0.25)
+	shine.light_cull_mask = 1 | 2
+	add_child(shine)
+	shine.look_at_from_position(Vector3.ZERO, Vector3(0.15, 1.0, 0.1), Vector3.FORWARD)
 	add_child(planet)
 	lines = ImmediateMesh.new()
 	line_mat = StandardMaterial3D.new()
@@ -376,6 +406,8 @@ func _update_world(delta: float) -> void:
 	else:
 		off = Vector3(cos(pitch) * sin(yaw), sin(pitch), cos(pitch) * cos(yaw)) * dist
 	cam.position = target_node.position + off
+	# Shadow map covers just the ship in view, so its resolution goes on the ship, not empty space.
+	sun.directional_shadow_max_distance = dist + 260.0
 	var fwd := (target_node.position - cam.position).normalized()
 	cam.look_at(target_node.position, Vector3.UP.rotated(fwd, -0.38))
 	# Beams and rounds.
