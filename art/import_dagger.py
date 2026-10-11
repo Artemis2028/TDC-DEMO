@@ -6,8 +6,8 @@ The concept model keeps its hull, tanks, seams, missile doors, nose housing, rad
   * turns it to the game's axes (nose along +Y in Blender, which the glTF exporter makes -Z in Godot),
   * removes cameras and lights,
   * regroups each radiator wing under a RadPivot node whose local +X points outward, so the game can fold it,
-  * makes the two side laser housings turrets 0 (starboard) and 1 (port) and adds a copy on top as turret 2,
-    matching the sim's turret angles (0, 180, 90 degrees),
+  * puts three copies of the starboard laser housing on the diagonals (45, 135, 315 degrees, matching the sim),
+    halfway between the radiator wings,
   * names the eight OMS pod nozzles, adds the coilgun and the reference points the game looks for
     (see build_ships.py for the list),
   * prefixes hull meshes N_/B_/A_ by section and joins small parts by material so the game draws a few dozen
@@ -151,22 +151,29 @@ def main(save_blend):
         for o, mw in zip(parts, worlds):
             o.matrix_world = mw
             bpy.context.view_layer.update()
-    turn = Matrix.Rotation(-math.pi / 2, 4, "Y")       # +X (starboard) to +Z (top), about the ship's axis
-    dors = []
-    for ob in star:
-        c = ob.copy()
-        if ob.data is not None:
-            c.data = ob.data.copy()
-        col.objects.link(c)
-        dors.append(c)
-    remap = {o: c for o, c in zip(star, dors)}
-    for o, c in zip(star, dors):
-        mw = turn @ o.matrix_world
-        c.parent = remap.get(o.parent)
-        c.matrix_world = mw
-    bpy.context.view_layer.update()
+    # Three housings on the diagonals, halfway between the radiator wings (which stand at 0, 90, 180, 270 deg), so
+    # nothing stands in their line of fire astern: copies of the starboard housing turned to each turret angle.
+    copies = []
+    for ang in B.TURRET_ANGLES:
+        turn = Matrix.Rotation(-ang, 4, "Y")            # +X (starboard) to the turret angle, about the ship's axis
+        made = []
+        for ob in star:
+            c = ob.copy()
+            if ob.data is not None:
+                c.data = ob.data.copy()
+            col.objects.link(c)
+            made.append(c)
+        remap = {o: c for o, c in zip(star, made)}
+        for o, c in zip(star, made):
+            mw = turn @ o.matrix_world
+            c.parent = remap.get(o.parent)
+            c.matrix_world = mw
+        bpy.context.view_layer.update()
+        copies.append((made[0], made))
+    for ob in star + port:                              # the concept's own side housings make way for the copies
+        bpy.data.objects.remove(ob, do_unlink=True)
     rotating = ("housing", "aperture rim", "inner bezel", "optical aperture")
-    for k, (root_ob, parts) in enumerate([(star_root, star), (port_root, port), (dors[0], dors)]):
+    for k, (root_ob, parts) in enumerate(copies):
         centre = root_ob.matrix_world.translation.copy()
         out = Vector((centre.x, 0, centre.z)).normalized()
         along = Vector((0, 1, 0))
@@ -210,7 +217,7 @@ def main(save_blend):
     B.empty("Gun_Rail", (0, 0, 0))     # the Earth hull carries no railgun; the node keeps the game's lookup simple
 
     # reference points: Drive, Laser, Gun, Sensors, Radiators, Crew; and the drive exit
-    for i, p in enumerate([(0, ours(70), 0), (0, ours(-65), 7.0 + 6.0 * HOUSING_SCALE), gout * gr + Vector((0, ours(-25), 0)),
+    for i, p in enumerate([(0, ours(70), 0), Vector((math.cos(B.TURRET_ANGLES[0]), 0, math.sin(B.TURRET_ANGLES[0]))) * (7.0 + 6.0 * HOUSING_SCALE) + Vector((0, ours(-65), 0)), gout * gr + Vector((0, ours(-25), 0)),
                            (0, ours(-83) + NOSE_LENGTH * 0.8, 0), (0, ours(25), 40.0), (0, ours(-73), 0)]):
         B.empty(f"Sys{i}", p)
     B.empty("Nozzle", (0, ours(89.6), 0))
