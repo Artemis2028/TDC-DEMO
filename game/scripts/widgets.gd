@@ -26,8 +26,17 @@ const GOOD := Color("#cfe3ea")
 const BALL_SKY := Color("#1d3a4c")
 const BALL_GND := Color("#4a2b16")
 
-static var FH: Font = load("res://fonts/DejaVuSansCondensed-Bold.ttf")
-static var FM: Font = load("res://fonts/DejaVuSansMono.ttf")
+## HUD type: Saira (bold, semi-condensed) for labels and headings, Share Tech Mono for readouts. Both from the
+## Google Fonts repository under the SIL Open Font License (licences beside them in fonts/).
+static var FH: Font = _saira(700, 87.5)
+static var FM: Font = load("res://fonts/ShareTechMono-Regular.ttf")
+
+static func _saira(weight: float, width: float) -> Font:
+	var ts := TextServerManager.get_primary_interface()
+	var f := FontVariation.new()
+	f.base_font = load("res://fonts/Saira-Variable.ttf")
+	f.variation_opentype = {ts.name_to_tag("wght"): weight, ts.name_to_tag("wdth"): width}
+	return f
 
 static func hp(v: float) -> Color:
 	return GOOD if v > 75 else (PRI if v > 45 else HOT)

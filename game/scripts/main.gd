@@ -1292,7 +1292,7 @@ func _overlay() -> Control:
 func _build_menu() -> void:
 	menu = _overlay()
 	var v := VBoxContainer.new()
-	v.position = Vector2(520, 170)
+	v.position = Vector2(520, 90)
 	v.size = Vector2(400, 580)
 	v.add_theme_constant_override("separation", 14)
 	menu.add_child(v)
@@ -1302,6 +1302,12 @@ func _build_menu() -> void:
 	var st := UI.label("Earth and Mars, 2300. One battle above Mars.", 15, UI.MUTED)
 	st.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(st)
+	# The demo's numbers are tuned for play, not taken from the game's physics (docs/movement_vs_framework.md).
+	var note := UI.label("GAMIFIED DEMO · ship performance, weapons and damage are tuned for play and are not representative of the final simulation", 12, UI.PRI)
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.custom_minimum_size.x = 400
+	v.add_child(note)
 	v.add_child(UI.header("Choose your ship"))
 	v.add_child(UI.button("Dagger · laser cruiser", func(): _start(0), UI.PRI, 400))
 	v.add_child(UI.button("Lance · laser + spinal coilgun", func(): _start(1), UI.PRI, 400))

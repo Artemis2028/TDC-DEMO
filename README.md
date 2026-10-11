@@ -49,3 +49,7 @@ editing by hand. Rebuild with `blender --background --python art/build_ships.py 
 art/build_ships.py --blend` with the `bpy` package). The game finds parts by name (Turret0..2, Muzzle0..2, Rad*,
 OMS_*, Gun_Coil/Gun_Rail, Sys0..5, Nozzle; mesh names starting N_/B_/A_ belong to the nose/body/aft sections),
 so keep those names if you edit a model by hand.
+
+## Fonts
+
+- [Saira](https://github.com/google/fonts/tree/main/ofl/saira) (headings and labels) and [Share Tech Mono](https://github.com/google/fonts/tree/main/ofl/sharetechmono) (readouts), from the Google Fonts repository under the SIL Open Font License 1.1; licences in `game/fonts/`.
