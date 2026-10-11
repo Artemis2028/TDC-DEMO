@@ -1,6 +1,7 @@
 #include "tdc/battle.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -55,8 +56,9 @@ static ShipClass base_earth(const char* name) {
     c.armor = {120, 40, 30}; c.structure = {160, 220, 160};
     c.placed = {Section::Aft, Section::Body, Section::Body, Section::Nose, Section::Body, Section::Body};
     // laser_dps: demo balance, set so each Earth ship wins about 65 % of AI-vs-AI battles (100-seed sweeps with the
-    // faster handling: Dagger 2.18 -> 64 %, Lance 1.6 -> 63 %). Balance tips sharply around these values. Not physical.
-    c.laser_dps = 2.18; c.laser_range = 150e3; c.laser_heat = 2.2;
+    // faster handling and armour panels: Dagger 2.13 -> 72 %, Lance 1.57 -> 67 %). Balance tips sharply around these
+    // values. Not physical.
+    c.laser_dps = 2.13; c.laser_range = 150e3; c.laser_heat = 2.2;
     c.drive_heat = 0.6; c.cool_extended = 2.7; c.cool_retracted = 0.6;
     c.crew = 40;
     c.repair_base = {60, 45, 50, 40, 35, 70};
@@ -71,7 +73,7 @@ ShipClass lance_class() {
     c.gun = GunKind::Coilgun;
     c.gun_damage = 46; c.gun_reload = 18; c.gun_speed = 12e3; c.gun_range = 100e3; c.gun_heat = 9;
     c.ammo = 60;
-    c.laser_dps = 1.6;
+    c.laser_dps = 1.57;
     return c;
 }
 
@@ -97,6 +99,28 @@ double Ship::repair_need(Sys s) const {
     return std::min({turret_hp[0], turret_hp[1], turret_hp[2]});
 }
 
+const char* panel_name(int panel) {
+    static const char* n[] = {"right", "upper right", "top", "upper left", "left", "lower left", "bottom", "lower right", "centre"};
+    return n[panel];
+}
+
+// A section's armour figure is the mean of its panels: eight around the hull, plus the centre on the nose and stern.
+static void sync_armor(Ship& s) {
+    for (int k = 0; k < kSec; ++k) {
+        int n = k == static_cast<int>(Section::Body) ? kPanels - 1 : kPanels;
+        double sum = 0;
+        for (int i = 0; i < n; ++i) sum += s.panels[static_cast<std::size_t>(k)][static_cast<std::size_t>(i)];
+        s.armor[static_cast<std::size_t>(k)] = sum / n;
+    }
+}
+
+double Ship::worst_panel(int sec) const {
+    int n = sec == static_cast<int>(Section::Body) ? kPanels - 1 : kPanels;
+    double w = panels[static_cast<std::size_t>(sec)][0];
+    for (int i = 1; i < n; ++i) w = std::min(w, panels[static_cast<std::size_t>(sec)][static_cast<std::size_t>(i)]);
+    return w;
+}
+
 static void sync_laser(Ship& s) {
     s.health[static_cast<int>(Sys::Laser)] = (s.turret_hp[0] + s.turret_hp[1] + s.turret_hp[2]) / kTurrets;
 }
@@ -114,6 +138,7 @@ static Ship make_ship(int id, const ShipClass& c, int side, bool player, Vec2 po
     s.pos = pos; s.heading = heading;
     s.health.fill(100);
     s.armor = c.armor; s.structure = c.structure;
+    for (int k = 0; k < kSec; ++k) s.panels[static_cast<std::size_t>(k)].fill(c.armor[static_cast<std::size_t>(k)]);
     s.crew = c.crew; s.ammo = c.ammo; s.dv_left = c.delta_v;
     if (c.gun == GunKind::None) s.health[static_cast<int>(Sys::Gun)] = 0;
     for (int k = 0; k < kTurrets; ++k) s.turret_aim[static_cast<std::size_t>(k)] = mount(k);
@@ -333,6 +358,7 @@ void Battle::step() {
     land_shots();
     for (auto& s : ships_) if (!s.out) check_out(s);
     time_ += kDt;
+    release_assessments();
     int alive0 = 0, alive1 = 0;
     for (const auto& s : ships_) if (!s.out) (s.side == 0 ? alive0 : alive1)++;
     if (alive0 == 0 || alive1 == 0) {
@@ -436,6 +462,30 @@ Section Battle::hit_section(const Ship& t, Sys aim, const Ship& from) const {
     return Section::Body;
 }
 
+int Battle::hit_panel(const Ship& t, Section sec, const Ship& from, bool gun) {
+    // Which panel the shot lands on. The shooter lies in the battle plane at relative bearing rel from the target; its
+    // side of the hull is 0 deg (right) or 180 deg (left) around the axis, turned by the target's roll. Straight down the
+    // nose or stern axis (within 10 deg) a beam holds on the centre of the cap; rounds land there 60 % of the time and
+    // otherwise on a random ring panel. Off the axis, rounds scatter one panel either way half the time.
+    double rel = wrap(std::atan2(from.pos.y - t.pos.y, from.pos.x - t.pos.x) - t.heading);
+    bool end_on = sec != Section::Body && std::fabs(std::sin(rel)) < std::sin(0.17453292519943295);
+    if (end_on) {
+        if (!gun) return kCentrePanel;
+        if (rnd() < 0.6) return kCentrePanel;
+        return static_cast<int>(rnd() * 8) % 8;
+    }
+    double around = (std::sin(rel) > 0 ? kPi : 0.0) - t.roll;
+    double a = around + kPi / 8;
+    a -= 2 * kPi * std::floor(a / (2 * kPi));
+    int panel = static_cast<int>(a / (kPi / 4)) % 8;
+    if (gun) {
+        double r = rnd();
+        if (r < 0.25) panel = (panel + 7) % 8;
+        else if (r > 0.75) panel = (panel + 1) % 8;
+    }
+    return panel;
+}
+
 void Battle::fire(Ship& s) {
     s.laser_firing = false;
     int e = enemy_of(s);
@@ -510,20 +560,29 @@ void Battle::damage(Ship& t, Sys aim, double amount, bool laser, int from) {
     // structure and systems; once a section's structure is gone, what is left carries on into the next section.
     Section entry = hit_section(t, Sys::Count, ships_[from]);
     int k = static_cast<int>(entry);
-    double before = t.armor[k];
+    int pi = hit_panel(t, entry, ships_[from], !laser);
+    double& panel = t.panels[static_cast<std::size_t>(k)][static_cast<std::size_t>(pi)];
+    double before = panel;
     double rem;
     if (laser) {
-        // A beam has to burn the armour away before anything inside gets hurt.
-        double used = std::min(t.armor[k], amount);
-        t.armor[k] -= used;
+        // A beam has to burn the panel away before anything inside gets hurt.
+        double used = std::min(panel, amount);
+        panel -= used;
         rem = amount - used;
     } else {
-        // A round loses half its damage to the armour while there is armour, and wears it down.
-        double absorbed = std::min(t.armor[k], amount * 0.5);
-        t.armor[k] -= absorbed;
+        // A round loses half its damage to the panel while there is armour, and wears it down.
+        double absorbed = std::min(panel, amount * 0.5);
+        panel -= absorbed;
         rem = amount - absorbed;
     }
-    if (before > 0 && t.armor[k] <= 0) log(t.id, "burn-through", std::string(laser ? "Beam" : "Rounds") + " through the " + section_name(entry) + " armour of " + t.name);
+    sync_armor(t);
+    if (before > 0 && panel <= 0) {
+        log(t.id, "burn-through", std::string(laser ? "Beam" : "Rounds") + " through the " + section_name(entry) + " armour (" + panel_name(pi) + ") of " + t.name);
+        // The flash of a breach can look like a kill: a chance of a false call on a system in that section.
+        std::vector<int> inside;
+        for (int s = 0; s < kSys; ++s) if (t.cls.placed[s] == entry && t.health[s] > 0) inside.push_back(s);
+        if (!inside.empty()) assess(from, t, sys_name(static_cast<Sys>(inside[static_cast<std::size_t>(rnd() * inside.size()) % inside.size()])), false, false);
+    }
     if (rem <= 0) {
         if (!laser) log(t.id, "hit", std::string("Hit on the ") + section_name(entry) + " of " + t.name + ": stopped by the armour");
         return;
@@ -575,7 +634,10 @@ void Battle::damage(Ship& t, Sys aim, double amount, bool laser, int from) {
             hp = std::max(0.0, hp - rem * kTurretFragility * (laser ? 1.0 : 0.8));
             sync_laser(t);
             if (!laser) log(t.id, "hit", std::string("Hit on ") + t.name + fmt(": laser turret %.0f", k + 1) + fmt(" at %.0f %%", hp));
-            if (was > 0 && hp <= 0) log(t.id, "disabled", t.name + fmt(": laser turret %.0f knocked out", k + 1));
+            if (was > 0 && hp <= 0) {
+                log(t.id, "disabled", t.name + fmt(": laser turret %.0f knocked out", k + 1));
+                assess(from, t, fmt("laser turret %.0f", k + 1), true, true);
+            } else if (!laser || (was > 50 && hp <= 50)) assess(from, t, fmt("laser turret %.0f", k + 1), true, false);
             return;
         }
         t.health[v] = std::max(0.0, t.health[v] - rem * (laser ? 1.0 : 0.8));
@@ -584,8 +646,38 @@ void Battle::damage(Ship& t, Sys aim, double amount, bool laser, int from) {
             t.crew = std::max(0, t.crew - std::max(lost, laser ? 0 : 1));
         }
         if (!laser) log(t.id, "hit", std::string("Hit on ") + t.name + ": " + sys_name(victim) + fmt(" at %.0f %%", t.health[v]));
-        if (old > 0 && t.health[v] <= 0) log(t.id, "disabled", std::string(t.name) + ": " + sys_name(victim) + " knocked out");
+        if (old > 0 && t.health[v] <= 0) {
+            log(t.id, "disabled", std::string(t.name) + ": " + sys_name(victim) + " knocked out");
+            assess(from, t, sys_name(victim), false, true);
+        } else if (!laser || (old > 50 && t.health[v] <= 50)) assess(from, t, sys_name(victim), false, false);
         return;
+    }
+}
+
+// ---------------------------------------------------------------- damage assessment
+
+void Battle::assess(int observer, const Ship& target, const std::string& part, bool destroyed, bool real) {
+    // The crew only sees the enemy through the EO track. A real kill is noticed with a chance that grows with track
+    // quality (30 % with no track to 90 % with a perfect one), and only after watching for 2-8 s. Damage that killed
+    // nothing (a round strike, an armour burn-through, a system burned past half) is sometimes called a kill anyway:
+    // 2 % of the time with a perfect track, 20 % with none (about one report in seven is wrong in AI battles).
+    // Demo rules (assumption, not a sensor model).
+    double q = sensor_quality(observer, target.id);
+    double p = real ? 0.3 + 0.6 * q : 0.02 + 0.18 * (1.0 - q);
+    if (rnd() >= p) return;
+    std::string name = part;
+    for (auto& ch : name) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    pending_.push_back({time_, time_ + 2.0 + 6.0 * rnd(), observer,
+                        "Enemy " + name + (destroyed ? ": probable destroy" : ": probable disable"), real});
+}
+
+void Battle::release_assessments() {
+    for (std::size_t i = 0; i < pending_.size();) {
+        if (pending_[i].due <= time_ + 1e-9) {
+            log(pending_[i].observer, "assess", pending_[i].text);
+            reported_.push_back(pending_[i]);
+            pending_.erase(pending_.begin() + static_cast<std::ptrdiff_t>(i));
+        } else ++i;
     }
 }
 
@@ -648,6 +740,7 @@ std::uint64_t Battle::state_hash() const {
         mix(s.pos.x); mix(s.pos.y); mix(s.vel.x); mix(s.vel.y); mix(s.heading); mix(s.heat);
         for (double v : s.health) mix(v);
         for (double v : s.armor) mix(v);
+        for (const auto& sec : s.panels) for (double v : sec) mix(v);
         for (double v : s.turret_hp) mix(v);
         for (const Vec3& a : s.turret_aim) { mix(a.n); mix(a.r); mix(a.u); }
         mix(s.roll); mix(s.roll_dir); mix(s.crew); mix(s.ammo);

@@ -342,7 +342,7 @@ func _grid_texture() -> ImageTexture:
 
 ## Colour and animate from the sim's view of the ship.
 func show_state(s: Dictionary, delta: float) -> void:
-	var armor: PackedFloat64Array = s["armor"]
+	var armor: PackedFloat64Array = s["armor_worst"]   # tint by the thinnest panel, so a breach shows red
 	var armor_max: PackedFloat64Array = s["armor_max"]
 	var st: PackedFloat64Array = s["structure"]
 	var st_max: PackedFloat64Array = s["structure_max"]

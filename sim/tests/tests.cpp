@@ -23,6 +23,13 @@ static Battle run(std::uint64_t seed, int cls, double seconds, std::function<voi
     return b;
 }
 
+// Armour left on all of a section's panels together: a beam or round wears one panel, so section losses are summed.
+static double panel_sum(const Ship& s, int sec) {
+    double t = 0;
+    for (double v : s.panels[static_cast<std::size_t>(sec)]) t += v;
+    return t;
+}
+
 TEST(same_seed_same_battle) {
     // Determinism: identical seeds and orders give bit-identical states; different seeds differ once guns fire.
     auto a = run(7, 1, 300), b = run(7, 1, 300), c = run(8, 1, 300);
@@ -50,11 +57,11 @@ TEST(laser_falls_off_with_range_squared) {
         // Turrets start on target (as after a few seconds of tracking), so all ten ticks below fire.
         for (int k = 0; k < kTurrets; ++k) me.turret_aim[static_cast<std::size_t>(k)] = b.turret_goal(0, k, 1);
         double q = b.sensor_quality(0, 1);
-        double armor0 = foe.armor[0];
+        double armor0 = panel_sum(foe, 0);
         for (int i = 0; i < 10; ++i) { foe.burn = Burn::Off; b.step(); }
         double fall = r <= me.cls.laser_range ? 1 : std::pow(me.cls.laser_range / r, 2);
         double expect = me.cls.laser_dps * fall * (0.5 + 0.5 * q) * 1.0;
-        CHECK(std::fabs((armor0 - foe.armor[0]) - expect) < 0.02 * expect + 1e-9);
+        CHECK(std::fabs((armor0 - panel_sum(foe, 0)) - expect) < 0.02 * expect + 1e-9);
     }
 }
 
@@ -204,9 +211,9 @@ static double one_tick_burn(bool side_on, bool rolling) {
     foe.ai_controlled = false;
     b.set_roll(1, rolling ? 1 : 0);
     int sec = side_on ? 1 : 0;
-    double before = foe.armor[static_cast<std::size_t>(sec)];
+    double before = panel_sum(foe, sec);
     b.step();
-    return before - b.ships()[1].armor[static_cast<std::size_t>(sec)];
+    return before - panel_sum(b.ships()[1], sec);
 }
 
 TEST(rolling_spreads_the_beam_only_side_on) {
@@ -262,10 +269,10 @@ TEST(laser_power_is_shared_by_turrets) {
         foe.weapons_free = false; foe.burn = Burn::Off;
         foe.heading = std::atan2(-foe.pos.y, -foe.pos.x);   // facing us: our beam lands on its nose armour
         double q = b.sensor_quality(0, 1);
-        double before = foe.armor[0];
+        double before = panel_sum(foe, 0);
         b.step();
         double expect = b.ships()[0].cls.laser_dps * (bearing == 0 ? 1.0 : 1.0 / 3) * (0.5 + 0.5 * q) * Battle::kDt;
-        CHECK(std::fabs((before - b.ships()[1].armor[0]) - expect) < 1e-9);
+        CHECK(std::fabs((before - panel_sum(b.ships()[1], 0)) - expect) < 1e-9);
         int firing = 0;
         for (bool f : b.ships()[0].turret_firing) firing += f;
         CHECK(firing == (bearing == 0 ? 3 : 1));
@@ -333,12 +340,81 @@ TEST(picked_turret_is_hit_when_exposed) {
     foe.weapons_free = false;
     foe.heading = 3.14159265358979323846;
     foe.armor = {0, 0, 0};
+    for (auto& sec : foe.panels) sec.fill(0);
     foe.structure[0] = 0;   // nose already shot through: the beam reaches the turrets amidships
     b.set_fire_mode(0, FireMode::Manual, Sys::Laser);
     b.set_target_turret(0, 2);
     for (int i = 0; i < 50; ++i) b.step();
     CHECK(foe.turret_hp[2] < 100 && foe.turret_hp[0] == 100 && foe.turret_hp[1] == 100);
     (void)me;
+}
+
+// ---------------------------------------------------------------- armour panels and damage assessment
+
+TEST(a_beam_wears_only_the_panel_it_hits) {
+    // Enemy side-on to us, its right side toward us, not rolling: our beam lands on its body's right panel (0) only;
+    // the left panel (4) and the rest stay whole. Nose-on, the beam holds on the nose cap's centre panel only.
+    for (bool side_on : {true, false}) {
+        Battle b = placed(0);
+        auto& foe = const_cast<Ship&>(b.ships()[1]);
+        foe.weapons_free = false; foe.burn = Burn::Off; foe.ai_controlled = false; foe.vel = {0, 0};
+        foe.heading = side_on ? -3.14159265358979323846 / 2 : 3.14159265358979323846;   // we are on its right / dead ahead
+        foe.facing = side_on ? Facing::Broadside : Facing::Nose;
+        const_cast<Ship&>(b.ships()[0]).vel = {0, 0};
+        auto start = foe.panels;
+        for (int i = 0; i < 20; ++i) b.step();
+        int sec = side_on ? 1 : 0, hit = side_on ? 0 : kCentrePanel;
+        for (int sct = 0; sct < kSec; ++sct)
+            for (int pn = 0; pn < kPanels; ++pn) {
+                double was = start[static_cast<std::size_t>(sct)][static_cast<std::size_t>(pn)];
+                double now = b.ships()[1].panels[static_cast<std::size_t>(sct)][static_cast<std::size_t>(pn)];
+                if (sct == sec && pn == hit) CHECK(now < was);
+                else CHECK(now == was);
+            }
+    }
+}
+
+TEST(rolling_side_on_turns_fresh_panels_to_the_beam) {
+    // Side-on and rolling at 20 deg/s, each 45 deg panel faces us for about 2.25 s: over 20 s of beam, at least five of
+    // the body's eight panels have been burned, none of them all the way through (the roll also cuts the beam to 35 %).
+    Battle b = placed(0);
+    auto& foe = const_cast<Ship&>(b.ships()[1]);
+    foe.weapons_free = false; foe.burn = Burn::Off; foe.ai_controlled = false; foe.vel = {0, 0};
+    foe.heading = -3.14159265358979323846 / 2;
+    foe.facing = Facing::Broadside;
+    const_cast<Ship&>(b.ships()[0]).vel = {0, 0};
+    b.set_roll(1, 1);
+    for (int i = 0; i < 200; ++i) { const_cast<Ship&>(b.ships()[0]).heat = 0; b.step(); }
+    int worn = 0;
+    for (int pn = 0; pn < 8; ++pn) {
+        double v = b.ships()[1].panels[1][static_cast<std::size_t>(pn)];
+        worn += v < b.ships()[1].cls.armor[1];
+        CHECK(v > 0);
+    }
+    CHECK(worn >= 5);
+}
+
+TEST(enemy_kills_are_reported_as_probable_and_sometimes_wrongly) {
+    // Over 40 AI battles, our crew reports some but not all of the enemy's real losses (30-90 % chance each, depending
+    // on the EO track), always 2-8 s after the hit, and makes false calls too: every report reads "probable".
+    int real = 0, called_real = 0, called_false = 0, bad_delay = 0, not_probable = 0;
+    for (std::uint64_t seed = 1; seed <= 20; ++seed)
+        for (int cls : {0, 1}) {
+            auto b = run(seed, cls, 3600);
+            for (const auto& e : b.events()) real += e.ship == 1 && e.kind == "disabled";
+            for (const auto& a : b.reported_assessments()) {
+                if (a.observer != 0) continue;
+                (a.true_kill ? called_real : called_false)++;
+                double d = a.due - a.made;
+                bad_delay += d < 2.0 - 1e-9 || d > 8.0 + 1e-9;
+                not_probable += a.text.find("probable") == std::string::npos;
+            }
+        }
+    std::printf("  enemy losses %d, called %d, false calls %d\n", real, called_real, called_false);
+    CHECK(real > 20);
+    CHECK(called_real > 0.3 * real && called_real < 0.9 * real);
+    CHECK(called_false > 0.05 * (called_real + called_false));
+    CHECK(bad_delay == 0 && not_probable == 0);
 }
 
 int main() {

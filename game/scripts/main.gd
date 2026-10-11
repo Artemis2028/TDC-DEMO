@@ -319,9 +319,13 @@ func _drain_events() -> void:
 		if str(e["kind"]) == "fire":          # gun fired: coils and muzzle light up on whichever ship fired
 			var m: ShipModel = own_model if int(e["ship"]) == 0 else foe_model
 			if m: m.fire_gun()
-		if not ["hit", "burn-through", "disabled", "overheat", "out"].has(str(e["kind"])):
-			continue
-		log_lines.append([str(e["text"]), _clock(float(e["time"]))])
+		var kind := str(e["kind"])
+		var ship := int(e["ship"])
+		if kind == "assess" and ship == 0:
+			# our crew's call on the enemy: only ever "probable", and sometimes wrong
+			log_lines.append([str(e["text"]), _clock(float(e["time"])), true, float(e["time"])])
+		elif kind == "out" or (ship == 0 and ["hit", "burn-through", "disabled", "overheat"].has(kind)):
+			log_lines.append([str(e["text"]), _clock(float(e["time"])), false, float(e["time"])])
 	ev_index = battle.event_count()
 	while log_lines.size() > 6:
 		log_lines.pop_front()
@@ -1111,12 +1115,24 @@ func _update_hud() -> void:
 	if pl.is_empty():
 		pl.append(["☒", "ALL SYSTEMS NOMINAL", "", W.INK])
 		dc_line_sys.append(-1)
+	# The newest call on the enemy prints big and bold at the top for 20 s of battle time; older ones as plain lines.
+	var banner := -1
 	for k in range(log_lines.size() - 1, -1, -1):
-		if pl.size() >= 5: break
+		if log_lines[k][2]:
+			if battle.get_time() - float(log_lines[k][3]) < 20.0: banner = k
+			break
+	if banner >= 0:
+		var bl: Array = log_lines[banner]
+		var btxt := str(bl[0]).to_upper().replace(": ", " · ")
+		pl.insert(0, ["◆", btxt, bl[1], W.INK_HOT, true])
+		dc_line_sys.insert(0, -1)
+	for k in range(log_lines.size() - 1, -1, -1):
+		if pl.size() >= (4 if banner >= 0 else 5): break
+		if k == banner: continue
 		var l: Array = log_lines[k]
-		var txt: String = str(l[0]).to_upper()
+		var txt: String = str(l[0]).to_upper().replace(": PROBABLE", " PROB.")
 		if txt.length() > 24: txt = txt.substr(0, 23) + "…"
-		pl.append(["☒", txt, l[1], W.INK_DIM])
+		pl.append(["◆" if l[2] else "☒", txt, l[1], W.INK_HOT if l[2] else W.INK_DIM])
 		dc_line_sys.append(-1)
 	paper.set_lines(pl)
 
@@ -1431,7 +1447,7 @@ func _draw_tracers(c: Control) -> void:
 		c.draw_circle(hp, 1.8, Color.WHITE)
 
 ## Alerts over the 3D view: a pulsing red LASER WARNING right above our ship while an enemy beam is on us, and callouts
-## for major hits (round strikes, armour burn-through, systems knocked out) over whichever ship took them.
+## for major hits on our ship (round strikes, armour burn-through, systems knocked out).
 func _draw_alerts(c: Control) -> void:
 	if battle == null or state != "battle" or cam == null: return
 	var own: Dictionary = battle.get_ship(0)
@@ -1489,6 +1505,7 @@ func _anchor(m: ShipModel, fallback: Vector2) -> Vector2:
 func _popup(e: Dictionary) -> void:
 	var kind := str(e["kind"])
 	var who := int(e["ship"])
+	if who != 0: return            # only our own damage: what happened to the enemy is for the crew to judge
 	var head := ""
 	match kind:
 		"hit": head = "HIT"
