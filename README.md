@@ -41,7 +41,9 @@ AI against AI over 40 seeds: Dagger wins about 65 %, Lance about 65 %. `sim/test
 
 ## Ship models
 
-The ships are built in Blender by `art/build_ships.py` (pure script, no hand modelling) and exported to
+The Earth ship is Rafael's Dagger concept model (`art/source/Dagger_Earth_Destroyer.blend`), converted for the
+game by `art/import_dagger.py` (turns it to game axes, makes the radiator wings foldable, adds the three laser
+barbettes, OMS blisters and coilgun, joins parts by material). The Mars ship is built in Blender by `art/build_ships.py` (pure script, no hand modelling) and exported to
 `game/models/earth.glb` and `game/models/mars.glb`; `art/earth.blend` and `art/mars.blend` are the same models for
 editing by hand. Rebuild with `blender --background --python art/build_ships.py -- --blend` (or `python
 art/build_ships.py --blend` with the `bpy` package). The game finds parts by name (Turret0..2, Muzzle0..2, Rad*,

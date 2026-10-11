@@ -157,7 +157,7 @@ func _build_world() -> void:
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.3, 0.33, 0.4)
 	env.ambient_light_energy = 0.5
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.tonemap_mode = Environment.TONE_MAPPER_AGX     # same view transform as the Blender renders
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
