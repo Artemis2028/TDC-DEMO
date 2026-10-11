@@ -446,7 +446,6 @@ func _update_world(delta: float) -> void:
 		var p := _sim_to_world(s["pos"], focus)
 		var dir := (foe_model.position - own_model.position).normalized() if int(s["shooter"]) == 0 else (own_model.position - foe_model.position).normalized()
 		var tc := Color(0.6, 0.85, 1.0) if int(s["shooter"]) == 0 else Color(1.0, 0.6, 0.25)
-		segs.append([p - dir * 400.0, p, Color(tc * 1.6, 1)])
 		shot_vis.append([p, dir, tc])
 	lines.clear_surfaces()
 	if not segs.is_empty():
@@ -1424,8 +1423,9 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_M: sfx.muted = not sfx.muted
 
 
-## Gun rounds as glowing streaks: wide and bright at the round, thinning and fading 2 km back along its path, with a
-## glow at the head. Drawn over the 3D view so a round reads at any zoom (not to scale: the slug is centimetres across).
+## Gun rounds as a glowing head with a short tail that travels with the round and fades behind it (a comet, not a
+## beam): the tail runs back along the round's path for 300 m but never more than 60 px on screen. Drawn over the 3D
+## view so a round reads at any zoom (not to scale: the slug is centimetres across).
 func _draw_tracers(c: Control) -> void:
 	for sv in shot_vis:
 		var head: Vector3 = sv[0]
@@ -1433,18 +1433,19 @@ func _draw_tracers(c: Control) -> void:
 		var col: Color = sv[2]
 		if cam.is_position_behind(head): continue
 		var hp := cam.unproject_position(head)
-		var n := 8
-		var prev := hp
-		for i in range(1, n + 1):
-			var back := head - dir * (2000.0 * i / n)
-			if cam.is_position_behind(back): break
-			var bp := cam.unproject_position(back)
-			var k := 1.0 - float(i - 1) / n                       # 1 at the head, falling toward the tail
-			c.draw_line(prev, bp, Color(col, 0.85 * k * k), 1.0 + 3.0 * k, true)
-			prev = bp
-		c.draw_circle(hp, 7.0, Color(col, 0.25))
-		c.draw_circle(hp, 3.5, Color(col.lerp(Color.WHITE, 0.5), 0.8))
-		c.draw_circle(hp, 1.8, Color.WHITE)
+		var back := head - dir * 300.0
+		if not cam.is_position_behind(back):
+			var tail := cam.unproject_position(back) - hp
+			if tail.length() > 60.0: tail = tail.normalized() * 60.0
+			var n := 6
+			for i in n:
+				var a0 := float(i) / n
+				var a1 := float(i + 1) / n
+				var k := 1.0 - a0                                   # 1 at the head, fading toward the tail
+				c.draw_line(hp + tail * a0, hp + tail * a1, Color(col, 0.9 * k * k), 0.8 + 2.6 * k, true)
+		c.draw_circle(hp, 6.0, Color(col, 0.25))
+		c.draw_circle(hp, 3.2, Color(col.lerp(Color.WHITE, 0.5), 0.85))
+		c.draw_circle(hp, 1.6, Color.WHITE)
 
 ## Alerts over the 3D view: a pulsing red LASER WARNING right above our ship while an enemy beam is on us, and callouts
 ## for major hits on our ship (round strikes, armour burn-through, systems knocked out).
