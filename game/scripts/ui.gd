@@ -83,11 +83,11 @@ static func locked(text: String, min_w: int = 0) -> Button:
 	var b := button(text, Callable(), FAINT, min_w)
 	b.disabled = true
 	b.tooltip_text = "Coming soon. Support development on Patreon to unlock it sooner."
-	var strike := Line2D.new()
-	strike.width = 2
-	strike.default_color = Color(HOT, 0.8)
-	b.add_child(strike)
-	b.resized.connect(func(): strike.points = PackedVector2Array([Vector2(6, b.size.y * 0.5), Vector2(b.size.x - 6, b.size.y * 0.5)]))
+	var x := Control.new()
+	x.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	x.set_anchors_preset(Control.PRESET_FULL_RECT)
+	x.draw.connect(func(): W.draw_x(x, Rect2(Vector2.ZERO, x.size)))
+	b.add_child(x)
 	return b
 
 static func bar(width: int = 120, height: int = 8) -> ProgressBar:

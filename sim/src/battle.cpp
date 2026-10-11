@@ -66,6 +66,7 @@ ShipClass frigate_class() {
     c.ammo = 150;
     c.drive_heat = 0.5; c.cool_extended = 2.0; c.cool_retracted = 0.6;
     c.crew = 30;
+    c.delta_v = 1500;
     c.repair_base = {55, 45, 45, 40, 35, 70};
     return c;
 }
@@ -83,7 +84,7 @@ static Ship make_ship(int id, const ShipClass& c, int side, bool player, Vec2 po
     s.pos = pos; s.heading = heading;
     s.health.fill(100);
     s.armor = c.armor; s.structure = c.structure;
-    s.crew = c.crew; s.ammo = c.ammo;
+    s.crew = c.crew; s.ammo = c.ammo; s.dv_left = c.delta_v;
     if (c.gun == GunKind::None) s.health[static_cast<int>(Sys::Gun)] = 0;
     return s;
 }
@@ -176,6 +177,10 @@ void Battle::advance(double real_seconds) {
 void Battle::set_weapons_free(int ship, bool free) {
     ships_[ship].weapons_free = free;
     log(ship, "order", free ? "Weapons free" : "Weapons hold");
+}
+void Battle::set_armed(int ship, bool laser, bool on) {
+    (laser ? ships_[ship].laser_armed : ships_[ship].gun_armed) = on;
+    log(ship, "order", std::string(laser ? "Laser " : "Gun ") + (on ? "armed" : "safed"));
 }
 void Battle::set_fire_mode(int ship, FireMode m, Sys target) {
     ships_[ship].fire_mode = m; ships_[ship].target_sys = target;
@@ -282,8 +287,13 @@ void Battle::move(Ship& s) {
     double turn = s.cls.turn_rate * (0.3 + 0.7 * drive) * kDt;
     double d = wrap(want - s.heading);
     s.heading = wrap(s.heading + std::clamp(d, -turn, turn));
+    if (dir.len() > 0 && s.dv_left <= 0) {
+        dir = {0, 0};
+        if (s.burn != Burn::Off) { s.burn = Burn::Off; log(s.id, "order", s.name + ": propellant exhausted, drive off"); }
+    }
     if (dir.len() > 0) {
         double a = s.cls.accel * drive * s.throttle;
+        s.dv_left = std::max(0.0, s.dv_left - a * kDt);
         s.vel = s.vel + dir * (a * kDt);
         s.heat += s.cls.drive_heat * s.throttle * kDt;
     }
@@ -321,7 +331,7 @@ void Battle::fire(Ship& s) {
     if (aim == Sys::Radiators && !t.radiators_extended) aim = Sys::Count;   // nothing outside to hit
     bool rolling = s.facing == Facing::Broadside;
 
-    if (s.alive_sys(Sys::Laser) && r <= 3 * s.cls.laser_range && !s.holding_heat) {
+    if (s.laser_armed && s.alive_sys(Sys::Laser) && r <= 3 * s.cls.laser_range && !s.holding_heat) {
         double fall = r <= s.cls.laser_range ? 1.0 : (s.cls.laser_range / r) * (s.cls.laser_range / r);
         double dps = s.cls.laser_dps * fall * (s.health[static_cast<int>(Sys::Laser)] / 100.0) * (0.5 + 0.5 * q);
         if (rolling) dps *= 0.7;                                  // own hull blocks the turret part of each turn
@@ -332,7 +342,7 @@ void Battle::fire(Ship& s) {
     }
     s.gun_cooldown = std::max(0.0, s.gun_cooldown - kDt);
     bool gun_bears = std::fabs(wrap(std::atan2(t.pos.y - s.pos.y, t.pos.x - s.pos.x) - s.heading)) < 0.05;
-    if (s.alive_sys(Sys::Gun) && s.ammo > 0 && s.gun_cooldown <= 0 && r <= s.cls.gun_range && gun_bears) {
+    if (s.gun_armed && s.alive_sys(Sys::Gun) && s.ammo > 0 && s.gun_cooldown <= 0 && r <= s.cls.gun_range && gun_bears) {
         double p = hit_chance(s.id, e);
         bool hit = rnd() < p;
         double speed = s.cls.gun_speed + std::max(0.0, closing(s.id, e));
