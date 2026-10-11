@@ -6,7 +6,6 @@ const PATREON_URL := ""   # set before release
 const SPEED_NAMES := ["II", "½×", "1×", "2×", "5×", "10×", "CRZ"]
 const SYS_NAMES := ["Drive", "Laser", "Gun", "Sensors", "Radiators", "Crew"]
 const SYS_ABBR := ["DRV", "LSR", "GUN", "SNS", "RAD", "CRW"]
-const TURRET_POS := ["top R", "top L", "low R"]   # where each sits around the hull (45, 165, 290 deg)
 const PRESET_VERB := ["Disable", "Disarm", "Silence", "Blind", "Cook", "Kill"]
 const MARS_R := 3389.5e3
 const ALT := 650e3          # display orbit height, chosen so the planet's limb shows as an arc
@@ -816,7 +815,7 @@ func _update_hud() -> void:
 		(row[0] as W.Btn).set_text("ARM" if armed_k else "SAFE")
 		(row[1] as W.Flag).set_on(armed_k)
 		var col := W.HOT if hp_k <= 0 else (W.PRI if tfire[k] else (W.TEXT if armed_k else W.MUTED))
-		(row[2] as W.Txt).set_text("Laser %d · %s" % [k + 1, TURRET_POS[k]], col)
+		(row[2] as W.Txt).set_text("Laser %d" % (k + 1), col)
 		var st := "SAFE"
 		if hp_k <= 0: st = "DESTROYED"
 		elif bool(own["overheated"]) and armed_k: st = "LOCKOUT · HEAT"
@@ -951,7 +950,7 @@ func _update_hud() -> void:
 	var need := health.duplicate()
 	need[1] = thp[worst_t]
 	var dc_name := SYS_NAMES.duplicate()
-	dc_name[1] = "Laser T%d" % (worst_t + 1)
+	dc_name[1] = "Laser %d" % (worst_t + 1)
 	for r in reps:
 		busy[int(r["sys"])] = true
 		pl.append(["☐", "REPAIR %s" % str(dc_name[int(r["sys"])]).to_upper(), "%d s" % int(ceil(float(r["left"]))), W.INK])
