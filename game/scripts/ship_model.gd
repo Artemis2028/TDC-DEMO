@@ -24,7 +24,7 @@ const OMS_AFT := 0.765
 ## Build the ship. gun_kind: 0 none, 1 railgun, 2 coilgun.
 func build(is_mars: bool, gun_kind: int) -> void:
 	mars = is_mars
-	length = 130.0 if mars else 180.0
+	length = 130.0 if mars else 202.6
 	var root: Node3D = (load("res://models/mars.glb" if mars else "res://models/earth.glb") as PackedScene).instantiate()
 	add_child(root)
 	var grid := _grid_texture()
