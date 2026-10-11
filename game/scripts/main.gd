@@ -8,8 +8,10 @@ const SYS_NAMES := ["Drive", "Laser", "Gun", "Sensors", "Radiators", "Crew"]
 const SYS_ABBR := ["DRV", "LSR", "GUN", "SNS", "RAD", "CRW"]
 const PRESET_VERB := ["Disable", "Disarm", "Silence", "Blind", "Cook", "Kill"]
 ## Target select grid: [system, turret (-1 any), label, preset verb]
-const TARGETS := [[0, -1, "DRV", "Disable"], [1, 0, "LS1", "Disarm"], [1, 1, "LS2", "Disarm"], [1, 2, "LS3", "Disarm"],
-	[2, -1, "GUN", "Silence"], [3, -1, "SNS", "Blind"], [4, -1, "RAD", "Cook"], [5, -1, "CRW", "Kill"]]
+## One cell per kind of target, however many of it the enemy carries. Clicking a weapon kind again cycles through
+## the individual mounts (any → 1 → 2 → 3 → any), so the grid never grows with the enemy's loadout.
+const TARGETS := [[0, -1, "DRV", "Disable"], [1, -1, "LSR", "Disarm"], [2, -1, "GUN", "Silence"],
+	[3, -1, "SNS", "Blind"], [4, -1, "RAD", "Cook"], [5, -1, "CRW", "Kill"]]
 const MARS_R := 3389.5e3
 const ALT := 650e3          # display orbit height, chosen so the planet's limb shows as an arc
 const VP := Rect2(312, 72, 804, 684)
@@ -553,14 +555,14 @@ func _build_left() -> void:
 	tgt_scr = W.Screen.new("", Vector2(260, 26), W.PRI, 13)
 	_add(tgt_scr, Vector2(x, y))
 	y += 33
-	var cw := (260.0 - 12) / 4
+	var cw3 := (260.0 - 8) / 3
 	for i in TARGETS.size():
-		var pos := Vector2(x + (i % 4) * (cw + 4), y + (i / 4) * 44)
+		var pos := Vector2(x + (i % 3) * (cw3 + 4), y + (i / 3) * 44)
 		var si: int = TARGETS[i][0]
-		var tk: int = TARGETS[i][1]
-		var b := _btn("cap", TARGETS[i][2], pos, Vector2(cw, 40), func(): _pick_target(si, tk))
+		var b := _btn("cap", TARGETS[i][2], pos, Vector2(cw3, 40), func(): _pick_target(si))
 		tgt_btns.append(b)
 	y += 92
+	var cw := (260.0 - 12) / 4
 	# rotation / translation
 	_add(W.Header.new("Rotation · translation", W.SEC, "", 260), Vector2(x, y))
 	y += 31
@@ -725,12 +727,24 @@ func _set_mode(mi: int) -> void:
 	battle.set_fire_mode(0 if mi == 2 else 1, int(own["target_sys"]))
 	if mi == 2: battle.set_target_turret(-1)
 
-func _pick_target(si: int, turret := -1) -> void:
-	# Picking a target in auto switches to manual, as on the prototype.
-	if int(battle.get_ship(0)["fire_mode"]) == 0:
+func _pick_target(si: int) -> void:
+	# Picking a target in auto switches to manual, as on the prototype. Picking the lasers again steps through the
+	# enemy's turrets that still work: any (fire control picks the exposed one) → 1 → 2 → 3 → any.
+	var own: Dictionary = battle.get_ship(0)
+	var again := int(own["fire_mode"]) == 1 and int(own["target_sys"]) == si
+	if int(own["fire_mode"]) == 0:
 		preset_mode = false
 	battle.set_fire_mode(1, si)
-	battle.set_target_turret(turret)
+	var next := -1
+	if si == 1 and again:
+		var thp: PackedFloat64Array = battle.get_ship(1)["turret_hp"]
+		var cur: int = own["target_turret"]
+		for step in range(1, 5):
+			var cand := (cur + 1 + step) % 4 - 1        # cycles -1, 0, 1, 2
+			if cand < 0 or thp[cand] > 0:
+				next = cand
+				break
+	battle.set_target_turret(next)
 
 func _toggle_free() -> void:
 	battle.set_weapons_free(not bool(battle.get_ship(0)["weapons_free"]))
@@ -876,14 +890,15 @@ func _update_hud() -> void:
 	for i in TARGETS.size():
 		var b: W.Btn = tgt_btns[i]
 		var si: int = TARGETS[i][0]
-		var tk: int = TARGETS[i][1]
-		var hv: float = fthp[tk] if tk >= 0 else fh[si]
+		var hv: float = fh[si]
 		var v := ("%d" % int(hv)) if known else "??"
+		if si == 1 and ts == 1 and int(own["fire_mode"]) == 1:
+			v = ("ANY" if tt < 0 else "#%d" % (tt + 1)) + ((" · %d" % int(fthp[tt] if tt >= 0 else hv)) if known else "")
 		if preset_mode:
 			b.set_text(TARGETS[i][3], TARGETS[i][2])
 		else:
 			b.set_text(TARGETS[i][2], v)
-		b.set_state(si == ts and (tk < 0 or tt < 0 or tk == tt))
+		b.set_state(si == ts)
 		var dash := not known
 		if b.dashed != dash:
 			b.dashed = dash
@@ -1240,7 +1255,7 @@ func _pick_near(p: Vector2, pts: Array) -> bool:
 		var d: float = (pp[0] as Vector2).distance_to(p)
 		if d < bd: bd = d; best = pp
 	if best.is_empty(): return false
-	_pick_target(best[1], best[2])
+	_pick_target(best[1])
 	return true
 
 ## The enemy's targetable parts in world space: [position, system, turret, label]
@@ -1250,8 +1265,24 @@ func _foe_components() -> Array:
 		var si: int = TARGETS[i][0]
 		var tk: int = TARGETS[i][1]
 		if si == 2 and int(battle.get_ship(1)["gun"]) == 0: continue
-		var pos: Vector3 = foe_model.turret_position(tk) if tk >= 0 else foe_model.sys_position(si)
-		out.append([pos, si, tk, TARGETS[i][2]])
+		var pos: Vector3 = foe_model.sys_position(si)
+		var lab: String = TARGETS[i][2]
+		if si == 1:
+			# one marker for the lasers, on the picked turret, or the one fire control would hit (faces us), or any live one
+			var foe: Dictionary = battle.get_ship(1)
+			var fthp: PackedFloat64Array = foe["turret_hp"]
+			var want: int = battle.get_ship(0)["target_turret"]
+			if want < 0:
+				var bears: Array = foe["turret_bears"]
+				for k in 3:
+					if fthp[k] > 0 and bears[k]: want = k; break
+				if want < 0:
+					for k in 3:
+						if fthp[k] > 0: want = k; break
+			if want >= 0:
+				pos = foe_model.turret_position(want)
+				lab = "LSR %d" % (want + 1) if int(battle.get_ship(0)["target_turret"]) >= 0 else "LSR"
+		out.append([pos, si, tk, lab])
 	return out
 
 func _unhandled_input(e: InputEvent) -> void:
