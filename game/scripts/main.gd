@@ -28,6 +28,9 @@ var cam: Camera3D
 var own_model: ShipModel
 var foe_model: ShipModel
 var planet: MeshInstance3D
+var alerts: Control
+var shot_vis: Array = []          # gun rounds in flight this frame: [world position, direction, colour], for the tracer
+var popups: Array = []            # hit callouts over the ships: [ship 0/1, headline, detail, colour, real time made, battle time]
 var sun: DirectionalLight3D
 var lines: ImmediateMesh
 var line_mat: StandardMaterial3D
@@ -312,6 +315,7 @@ func _start(cls: int) -> void:
 func _drain_events() -> void:
 	for e in battle.get_events(ev_index):
 		_event_sound(e)
+		_popup(e)
 		if str(e["kind"]) == "fire":          # gun fired: coils and muzzle light up on whichever ship fired
 			var m: ShipModel = own_model if int(e["ship"]) == 0 else foe_model
 			if m: m.fire_gun()
@@ -433,10 +437,13 @@ func _update_world(delta: float) -> void:
 			segs.append([own_model.muzzle_position(k), foe_model.position, Color(0.55, 0.85, 1.0, 0.9)])
 		if (foe["turret_firing"] as Array)[k]:
 			segs.append([foe_model.muzzle_position(k), own_model.position, Color(1.0, 0.45, 0.25, 0.9)])
+	shot_vis.clear()
 	for s in battle.get_shots():
 		var p := _sim_to_world(s["pos"], focus)
 		var dir := (foe_model.position - own_model.position).normalized() if int(s["shooter"]) == 0 else (own_model.position - foe_model.position).normalized()
-		segs.append([p - dir * 400.0, p, Color(1.6, 1.3, 0.6, 1)])
+		var tc := Color(0.6, 0.85, 1.0) if int(s["shooter"]) == 0 else Color(1.0, 0.6, 0.25)
+		segs.append([p - dir * 400.0, p, Color(tc * 1.6, 1)])
+		shot_vis.append([p, dir, tc])
 	lines.clear_surfaces()
 	if not segs.is_empty():
 		lines.surface_begin(Mesh.PRIMITIVE_LINES, line_mat)
@@ -529,6 +536,7 @@ func _build_viewport() -> void:
 	cam.far = 6.0e6
 	view_vp.add_child(cam)
 	overlay = _painter(VP, _draw_overlay)
+	alerts = _painter(VP, _draw_alerts)      # laser warning and hit callouts, on top of everything in the view
 	# time compression, top right of the view
 	var x := VP.end.x - 18 - SPEED_NAMES.size() * 44
 	_add(W.Txt.new("TIME", 10, W.FAINT, true, 40), Vector2(x - 42, VP.position.y + 22))
@@ -885,6 +893,7 @@ func _update_hud() -> void:
 	nameplate.queue_redraw()
 	cond_badge.queue_redraw()
 	overlay.queue_redraw()
+	alerts.queue_redraw()
 	clock_scr.set_text("%03d:%02d:%02d" % [int(t) / 3600, (int(t) / 60) % 60, int(t) % 60])
 	for i in speed_btns.size():
 		(speed_btns[i] as W.Btn).set_state(i == battle.get_speed())
@@ -1136,6 +1145,7 @@ func _draw_overlay(c: Control) -> void:
 	c.draw_string(W.FH, Vector2(40, 38), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, W.TEXT)
 	var sub := ("click a part to target it" if battle.get_sensor_quality() > 0.3 else "EO can't resolve parts yet: close the range") if view_target else "right-drag to orbit · wheel to zoom · C chase cam · Tab enemy view"
 	c.draw_string(W.FM, Vector2(40, 56), sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, W.MUTED)
+	_draw_tracers(c)
 	var health: PackedFloat64Array = own["health"]
 	var fh: PackedFloat64Array = foe["health"]
 	if not view_target:
@@ -1396,3 +1406,96 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_F3: _set_mode(2)
 			KEY_ESCAPE: _show_menu()
 			KEY_M: sfx.muted = not sfx.muted
+
+
+## Gun rounds as glowing streaks: wide and bright at the round, thinning and fading 2 km back along its path, with a
+## glow at the head. Drawn over the 3D view so a round reads at any zoom (not to scale: the slug is centimetres across).
+func _draw_tracers(c: Control) -> void:
+	for sv in shot_vis:
+		var head: Vector3 = sv[0]
+		var dir: Vector3 = sv[1]
+		var col: Color = sv[2]
+		if cam.is_position_behind(head): continue
+		var hp := cam.unproject_position(head)
+		var n := 8
+		var prev := hp
+		for i in range(1, n + 1):
+			var back := head - dir * (2000.0 * i / n)
+			if cam.is_position_behind(back): break
+			var bp := cam.unproject_position(back)
+			var k := 1.0 - float(i - 1) / n                       # 1 at the head, falling toward the tail
+			c.draw_line(prev, bp, Color(col, 0.85 * k * k), 1.0 + 3.0 * k, true)
+			prev = bp
+		c.draw_circle(hp, 7.0, Color(col, 0.25))
+		c.draw_circle(hp, 3.5, Color(col.lerp(Color.WHITE, 0.5), 0.8))
+		c.draw_circle(hp, 1.8, Color.WHITE)
+
+## Alerts over the 3D view: a pulsing red LASER WARNING right above our ship while an enemy beam is on us, and callouts
+## for major hits (round strikes, armour burn-through, systems knocked out) over whichever ship took them.
+func _draw_alerts(c: Control) -> void:
+	if battle == null or state != "battle" or cam == null: return
+	var own: Dictionary = battle.get_ship(0)
+	var foe: Dictionary = battle.get_ship(1)
+	var now := Time.get_ticks_msec() / 1000.0
+	# own view: over our ship; enemy view (our ship is off screen): top centre of the view
+	var own_anchor := Vector2(402, 150) if view_target else _anchor(own_model, Vector2(402, 150))
+	var foe_anchor := _anchor(foe_model, bracket_pos if bracket_pos.x > -900.0 else Vector2(402, 150))
+	var lasing := false
+	for f in (foe["turret_firing"] as Array): lasing = lasing or bool(f)
+	var y := own_anchor.y
+	var ship_y := own_anchor.y
+	if lasing:
+		# vertically halfway between the time controls (bottom at y 42 in the view) and the top of our ship
+		y = maxf(90.0, (42.0 + ship_y) / 2.0 + 11.0)       # the box is centred 11 px above y
+		var pulse := 0.65 + 0.35 * sin(now * TAU * 2.5)
+		var txt := "LASER WARNING"
+		var w := W.FH.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 30).x
+		var box := Rect2(Vector2(own_anchor.x - w / 2 - 14, y - 44), Vector2(w + 28, 66))
+		c.draw_rect(box, Color(0.12, 0.0, 0.0, 0.7 * pulse))
+		c.draw_rect(box, Color(W.HOT, pulse), false, 2.0)
+		W.text_c(c, W.FH, txt, Vector2(own_anchor.x, y - 16), 30, Color(1.0, 0.25, 0.2, pulse))
+		W.text_c(c, W.FM, "ENEMY BEAM ON THE HULL", Vector2(own_anchor.x, y + 10), 11, Color(1.0, 0.6, 0.55, pulse))
+	# hit callouts: rise and fade over three seconds, newest nearest the ship
+	var stack := [0, 0]
+	for i in range(popups.size() - 1, -1, -1):
+		var pu: Array = popups[i]
+		var age := now - float(pu[4])
+		if shot_path != "":                          # screenshots: rendering is slow; show the last 20 battle seconds as fresh
+			age = 0.5 if battle.get_time() - float(pu[5]) < 20.0 else 99.0
+		if age > 3.0: continue
+		var who: int = pu[0]
+		if stack[who] >= 2: continue                 # at most two per ship (fast time can bring many at once)
+		var a := 1.0 if age < 2.0 else 3.0 - age
+		var base := foe_anchor + Vector2(0, -100)
+		if who == 0:
+			# own view: just above our ship; enemy view (our ship off screen): under the laser warning
+			base = Vector2(own_anchor.x, 250.0 + stack[0] * 88) if view_target else Vector2(own_anchor.x, ship_y)
+		var p := base + Vector2(0, -stack[who] * 44 - age * 8)
+		stack[who] += 1
+		W.text_c(c, W.FH, pu[1], p, 22, Color(pu[3], a))
+		W.text_c(c, W.FM, pu[2], p + Vector2(0, 16), 11, Color(W.TEXT, a * 0.9))
+	while popups.size() > 0 and now - float(popups[0][4]) > 3.0 and shot_path == "":
+		popups.pop_front()
+
+## Screen point just above a ship (clamped inside the view), or the fallback when it is behind the camera.
+func _anchor(m: ShipModel, fallback: Vector2) -> Vector2:
+	if m == null: return fallback
+	var top := m.global_position + Vector3.UP * m.length * 0.45
+	if cam.is_position_behind(top): return fallback
+	var p := cam.unproject_position(top)
+	return Vector2(clampf(p.x, 160, 804 - 160), clampf(p.y, 120, 684 - 60))
+
+## A major hit for the callouts: what happened and to which ship.
+func _popup(e: Dictionary) -> void:
+	var kind := str(e["kind"])
+	var who := int(e["ship"])
+	var head := ""
+	match kind:
+		"hit": head = "HIT"
+		"burn-through": head = "ARMOUR BREACHED"
+		"disabled": head = "SYSTEM DOWN"
+		_: return
+	var col: Color = W.HOT if who == 0 else W.PRI
+	var detail := str(e["text"]).to_upper()
+	if detail.length() > 46: detail = detail.substr(0, 45) + "…"
+	popups.append([who, head, detail, col, Time.get_ticks_msec() / 1000.0, float(e["time"])])
