@@ -9,6 +9,8 @@ namespace tdc {
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kRollRate = 0.6;          // rad/s while rolling broadside
+constexpr double kTurretFragility = 3.0;   // each turret holds a third of the laser: the three together are as tough as one
 double clamp01(double v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
 std::string fmt(const char* f, double a) { char b[64]; std::snprintf(b, sizeof b, f, a); return b; }
 double wrap(double a) { while (a > kPi) a -= 2 * kPi; while (a < -kPi) a += 2 * kPi; return a; }
@@ -69,6 +71,15 @@ ShipClass frigate_class() {
     c.delta_v = 1500;
     c.repair_base = {55, 45, 45, 40, 35, 70};
     return c;
+}
+
+double Ship::repair_need(Sys s) const {
+    if (s != Sys::Laser) return health[static_cast<int>(s)];
+    return std::min({turret_hp[0], turret_hp[1], turret_hp[2]});
+}
+
+static void sync_laser(Ship& s) {
+    s.health[static_cast<int>(Sys::Laser)] = (s.turret_hp[0] + s.turret_hp[1] + s.turret_hp[2]) / kTurrets;
 }
 
 int Ship::repair_teams() const { return crew <= 0 ? 0 : 1 + crew / 15; }
@@ -179,8 +190,27 @@ void Battle::set_weapons_free(int ship, bool free) {
     log(ship, "order", free ? "Weapons free" : "Weapons hold");
 }
 void Battle::set_armed(int ship, bool laser, bool on) {
-    (laser ? ships_[ship].laser_armed : ships_[ship].gun_armed) = on;
-    log(ship, "order", std::string(laser ? "Laser " : "Gun ") + (on ? "armed" : "safed"));
+    if (laser) ships_[ship].turret_armed.fill(on);
+    else ships_[ship].gun_armed = on;
+    log(ship, "order", std::string(laser ? "Lasers " : "Gun ") + (on ? "armed" : "safed"));
+}
+void Battle::set_turret_armed(int ship, int turret, bool on) {
+    if (turret < 0 || turret >= kTurrets) return;
+    ships_[ship].turret_armed[static_cast<std::size_t>(turret)] = on;
+    log(ship, "order", fmt("Laser turret %.0f ", turret + 1) + (on ? "armed" : "safed"));
+}
+
+bool Battle::turret_bears(int ship, int turret, int target) const {
+    // The target lies in the battle plane. Seen from the ship it is ahead or astern by cos(rel) and off to the left or
+    // right; a turret sees it if it is near the axis (the beam clears the hull lengthwise) or if the side it is on lies
+    // within the turret's arc. Rolling the ship turns every turret's outward direction by the roll angle.
+    const Ship& s = ships_[ship];
+    const Ship& t = ships_[target];
+    double rel = wrap(std::atan2(t.pos.y - s.pos.y, t.pos.x - s.pos.x) - s.heading);
+    if (std::fabs(std::cos(rel)) >= std::cos(kAxialClear)) return true;
+    double side = std::sin(rel) > 0 ? kPi : 0.0;                 // left of the ship is 180 deg around the axis
+    double out = kTurretAngle[static_cast<std::size_t>(turret)] + s.roll;
+    return std::cos(out - side) >= std::cos(kTurretHalfArc);
 }
 void Battle::set_fire_mode(int ship, FireMode m, Sys target) {
     ships_[ship].fire_mode = m; ships_[ship].target_sys = target;
@@ -205,12 +235,20 @@ void Battle::set_auto_repair(int ship, bool on) { ships_[ship].auto_repair = on;
 bool Battle::order_repair(int ship, Sys s) {
     Ship& sh = ships_[ship];
     int i = static_cast<int>(s);
-    if (sh.out || sh.health[i] >= 100 || (s == Sys::Gun && sh.cls.gun == GunKind::None)) return false;
+    if (sh.out || sh.repair_need(s) >= 100 || (s == Sys::Gun && sh.cls.gun == GunKind::None)) return false;
     if (static_cast<int>(sh.repairs.size()) >= sh.repair_teams()) return false;
     for (const auto& r : sh.repairs) if (r.sys == s) return false;
     // Varying timer: worse damage takes longer, and every job runs 0.7-1.4x its estimate.
     // Each earlier patch on the same system makes the next one 30 % slower (less left to work with).
-    double t = sh.cls.repair_base[i] * (0.4 + 0.6 * (1 - sh.health[i] / 100.0)) * (0.7 + 0.7 * rnd()) * (1 + 0.3 * sh.patches[i]);
+    // A laser job works on the worst turret alone. Each turret is a whole laser with its own optics and mount, so the
+    // job takes as long as the old single-laser job did (demo balance: shorter turret jobs tipped AI battles 70/30
+    // the other way in an 80-battle sweep). Slowdown from earlier patches counts per turret.
+    int patches = sh.patches[i];
+    if (s == Sys::Laser) {
+        auto worst = std::min_element(sh.turret_hp.begin(), sh.turret_hp.end()) - sh.turret_hp.begin();
+        patches = sh.turret_patches[static_cast<std::size_t>(worst)];
+    }
+    double t = sh.cls.repair_base[i] * (0.4 + 0.6 * (1 - sh.repair_need(s) / 100.0)) * (0.7 + 0.7 * rnd()) * (1 + 0.3 * patches);
     sh.repairs.push_back({s, t, t});
     log(ship, "repair", std::string("Repair team to ") + sys_name(s) + fmt(": about %.0f s", t));
     return true;
@@ -254,7 +292,8 @@ void Battle::auto_repair(Ship& s) {
             if (k == static_cast<int>(Sys::Gun) && s.cls.gun == GunKind::None) continue;
             bool busy = false;
             for (const auto& rp : s.repairs) busy |= static_cast<int>(rp.sys) == k;
-            if (!busy && s.health[k] < h && s.health[k] < 80) { h = s.health[k]; worst = k; }
+            double need = s.repair_need(static_cast<Sys>(k));
+            if (!busy && need < h && need < 80) { h = need; worst = k; }
         }
         if (worst < 0 || !order_repair(s.id, static_cast<Sys>(worst))) break;
     }
@@ -298,6 +337,7 @@ void Battle::move(Ship& s) {
         s.heat += s.cls.drive_heat * s.throttle * kDt;
     }
     s.pos = s.pos + s.vel * kDt;
+    if (s.facing == Facing::Broadside) s.roll = wrap(s.roll + kRollRate * kDt);
 }
 
 Section Battle::hit_section(const Ship& t, Sys aim, const Ship& from) const {
@@ -329,16 +369,23 @@ void Battle::fire(Ship& s) {
         for (Sys pick : {Sys::Laser, Sys::Gun, Sys::Drive, Sys::Crew})
             if (t.alive_sys(pick) && !(pick == Sys::Gun && t.ammo <= 0)) { aim = pick; break; }
     if (aim == Sys::Radiators && !t.radiators_extended) aim = Sys::Count;   // nothing outside to hit
-    bool rolling = s.facing == Facing::Broadside;
-
-    if (s.laser_armed && s.alive_sys(Sys::Laser) && r <= 3 * s.cls.laser_range && !s.holding_heat) {
+    s.turret_firing.fill(false);
+    if (r <= 3 * s.cls.laser_range && !s.holding_heat) {
+        // The ship's laser power is shared by its three turrets: each gets a third, so all three bearing (nose or
+        // stern on) match one full-power laser, and a broadside brings one or two. Heat follows the power used.
         double fall = r <= s.cls.laser_range ? 1.0 : (s.cls.laser_range / r) * (s.cls.laser_range / r);
-        double dps = s.cls.laser_dps * fall * (s.health[static_cast<int>(Sys::Laser)] / 100.0) * (0.5 + 0.5 * q);
-        if (rolling) dps *= 0.7;                                  // own hull blocks the turret part of each turn
+        double dps = 0;
+        for (int k = 0; k < kTurrets; ++k) {
+            std::size_t u = static_cast<std::size_t>(k);
+            if (!s.turret_armed[u] || s.turret_hp[u] <= 0 || !turret_bears(s.id, k, e)) continue;
+            dps += s.cls.laser_dps / kTurrets * (s.turret_hp[u] / 100.0);
+            s.heat += s.cls.laser_heat / kTurrets * kDt;
+            s.turret_firing[u] = true;
+            s.laser_firing = true;
+        }
+        dps *= fall * (0.5 + 0.5 * q);
         if (t.facing == Facing::Broadside) dps *= 0.35;           // the spot keeps turning away
-        damage(t, aim, dps * kDt, true, s.id);
-        s.heat += s.cls.laser_heat * kDt;
-        s.laser_firing = true;
+        if (dps > 0) damage(t, aim, dps * kDt, true, s.id);
     }
     s.gun_cooldown = std::max(0.0, s.gun_cooldown - kDt);
     bool gun_bears = std::fabs(wrap(std::atan2(t.pos.y - s.pos.y, t.pos.x - s.pos.x) - s.heading)) < 0.05;
@@ -420,6 +467,24 @@ void Battle::damage(Ship& t, Sys aim, double amount, bool laser, int from) {
         }
         int v = static_cast<int>(victim);
         double old = t.health[v];
+        if (victim == Sys::Laser) {
+            // One turret takes the hit: one of those facing the shooter (they are the ones exposed), else any.
+            std::vector<int> exposed, alive;
+            for (int k = 0; k < kTurrets; ++k) {
+                if (t.turret_hp[static_cast<std::size_t>(k)] <= 0) continue;
+                alive.push_back(k);
+                if (turret_bears(t.id, k, from)) exposed.push_back(k);
+            }
+            const std::vector<int>& pool = exposed.empty() ? alive : exposed;
+            int k = pool[static_cast<std::size_t>(rnd() * pool.size()) % pool.size()];
+            double& hp = t.turret_hp[static_cast<std::size_t>(k)];
+            double was = hp;
+            hp = std::max(0.0, hp - rem * kTurretFragility * (laser ? 1.0 : 0.8));
+            sync_laser(t);
+            if (!laser) log(t.id, "hit", std::string("Hit on ") + t.name + fmt(": laser turret %.0f", k + 1) + fmt(" at %.0f %%", hp));
+            if (was > 0 && hp <= 0) log(t.id, "disabled", t.name + fmt(": laser turret %.0f knocked out", k + 1));
+            return;
+        }
         t.health[v] = std::max(0.0, t.health[v] - rem * (laser ? 1.0 : 0.8));
         if (victim == Sys::Crew) {
             int lost = static_cast<int>(std::round(t.crew * (old - t.health[v]) / 100.0));
@@ -454,7 +519,13 @@ void Battle::repairs(Ship& s) {
         r.left -= kDt;
         if (r.left <= 0) {
             int k = static_cast<int>(r.sys);
-            s.health[k] = std::max(s.health[k], 60.0);
+            if (r.sys == Sys::Laser) {
+                // The worst turret is the one the team was working on.
+                auto worst = std::min_element(s.turret_hp.begin(), s.turret_hp.end());
+                *worst = std::max(*worst, 60.0);
+                s.turret_patches[static_cast<std::size_t>(worst - s.turret_hp.begin())]++;
+                sync_laser(s);
+            } else s.health[k] = std::max(s.health[k], 60.0);
             s.patches[k]++;
             log(s.id, "repair", s.name + ": " + sys_name(r.sys) + " patched to 60 %");
             s.repairs.erase(s.repairs.begin() + static_cast<long>(i));
@@ -484,7 +555,8 @@ std::uint64_t Battle::state_hash() const {
         mix(s.pos.x); mix(s.pos.y); mix(s.vel.x); mix(s.vel.y); mix(s.heading); mix(s.heat);
         for (double v : s.health) mix(v);
         for (double v : s.armor) mix(v);
-        mix(s.crew); mix(s.ammo);
+        for (double v : s.turret_hp) mix(v);
+        mix(s.roll); mix(s.crew); mix(s.ammo);
     }
     mix(time_);
     return h;

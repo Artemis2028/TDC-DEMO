@@ -3,7 +3,7 @@ extends Node3D
 ## A long-spine warship: a sensor bulb at the nose, a string of pressure modules and tanks on a thin spine,
 ## an open truss around the reactor and drive at the stern, and big flat radiator panels standing out from the
 ## hull (their planes contain the ship's axis, so they sit edge-on to the drive and to anything ahead).
-## The laser turret rides on the back of the hull amidships, well away from the nose that takes enemy fire.
+## Three laser turrets on raised mounts ring the hull amidships, well away from the nose that takes enemy fire.
 ## The nose points along -Z. Everything is built from code; there are no imported meshes.
 
 var length := 160.0
@@ -12,8 +12,8 @@ var view_mode := 0          # 0 real colour, 1 armour condition
 var sec_parts: Array = [[], [], []]   # per section (nose, body, aft): [material, base colour]
 var radiators: Array = []             # [pivot, panel, material, base colour, span]
 var plume: MeshInstance3D
-var turret: Node3D                    # pivot that turns toward the target; the barrel lies along its -Z
-var muzzle: Node3D
+var turrets: Array = []               # [pivot (barrel along its -Z), muzzle, outward direction, ball, barrel]
+const TURRET_ANGLES := [deg_to_rad(45.0), deg_to_rad(165.0), deg_to_rad(290.0)]
 var _rad_open := 1.0
 var _grid: ImageTexture
 
@@ -64,31 +64,48 @@ func build(is_mars: bool, gun_kind: int) -> void:
 	_radiator_pair(0.27, PI / 2, 0.14, 0.035, dark)
 	_radiator_pair(0.57, PI / 2, 0.40, 0.085, dark)
 	_radiator_pair(0.70, PI / 2 + 0.95, 0.30, 0.11, bronze)
-	# --- laser turret: dorsal, amidships
-	turret = Node3D.new()
-	turret.position = Vector3(0, r * 1.02, _z(0.40))
-	add_child(turret)
-	var tbase := MeshInstance3D.new()
-	var sm := SphereMesh.new()
-	sm.radius = r * 0.55
-	sm.height = r * 1.1
-	tbase.mesh = sm
-	tbase.material_override = _mat(Color(0.55, 0.58, 0.62), 1)
-	turret.add_child(tbase)
-	var barrel := MeshInstance3D.new()
-	var cm := CylinderMesh.new()
-	cm.top_radius = r * 0.16
-	cm.bottom_radius = r * 0.22
-	cm.height = r * 1.6
-	barrel.mesh = cm
-	barrel.rotation.x = -PI / 2
-	barrel.position = Vector3(0, 0, -r * 0.8)
-	var lens := _mat(Color(0.3, 0.6, 0.9) if not mars else Color(0.95, 0.5, 0.25), 1)
-	barrel.material_override = lens
-	turret.add_child(barrel)
-	muzzle = Node3D.new()
-	muzzle.position = Vector3(0, 0, -r * 1.6)
-	turret.add_child(muzzle)
+	# --- laser turrets: three raised mounts around the hull amidships, between the radiator panels.
+	# Angles match the sim (kTurretAngle): measured about the axis from the ship's right (+X) toward its top (+Y).
+	var lens_col := Color(0.3, 0.6, 0.9) if not mars else Color(0.95, 0.5, 0.25)
+	for k in TURRET_ANGLES.size():
+		var a: float = TURRET_ANGLES[k]
+		var out := Vector3(cos(a), sin(a), 0)
+		var mount := Node3D.new()
+		mount.position = out * r * 1.0 + Vector3(0, 0, _z(0.40))
+		add_child(mount)
+		var post := MeshInstance3D.new()
+		var pm0 := CylinderMesh.new()
+		pm0.top_radius = r * 0.22
+		pm0.bottom_radius = r * 0.3
+		pm0.height = r * 0.5
+		post.mesh = pm0
+		post.material_override = _mat(Color(0.45, 0.47, 0.5), 1)
+		post.transform = Transform3D(Basis(Quaternion(Vector3.UP, out)), out * r * 0.25)
+		mount.add_child(post)
+		var piv := Node3D.new()
+		piv.position = out * r * 0.55
+		mount.add_child(piv)
+		var ball := MeshInstance3D.new()
+		var sm := SphereMesh.new()
+		sm.radius = r * 0.42
+		sm.height = r * 0.84
+		ball.mesh = sm
+		ball.material_override = _mat(Color(0.55, 0.58, 0.62), 1)
+		piv.add_child(ball)
+		var barrel := MeshInstance3D.new()
+		var cm := CylinderMesh.new()
+		cm.top_radius = r * 0.13
+		cm.bottom_radius = r * 0.18
+		cm.height = r * 1.3
+		barrel.mesh = cm
+		barrel.rotation.x = -PI / 2
+		barrel.position = Vector3(0, 0, -r * 0.65)
+		barrel.material_override = _mat(lens_col, 1)
+		piv.add_child(barrel)
+		var mz := Node3D.new()
+		mz.position = Vector3(0, 0, -r * 1.3)
+		piv.add_child(mz)
+		turrets.append([piv, mz, out, ball, barrel])
 	# --- spinal gun along the belly, muzzle just aft of the sensor bulb
 	if gun_kind != 0:
 		var gm := _mat(Color(0.62, 0.55, 0.42), 1)
@@ -125,22 +142,26 @@ func build(is_mars: bool, gun_kind: int) -> void:
 	plume.visible = false
 	add_child(plume)
 
-## Turn the laser turret toward a point in world space.
-func aim(world_target: Vector3) -> void:
+## Turn the turrets that bear toward a point in world space; the others park pointing forward along the hull.
+func aim(world_target: Vector3, bears: Array) -> void:
 	if not is_inside_tree(): return
-	var d := world_target - turret.global_position
-	if d.length() < 1.0: return
-	var up := global_transform.basis.y
-	if absf(d.normalized().dot(up)) > 0.99: up = global_transform.basis.x
-	turret.look_at(world_target, up)
+	for k in turrets.size():
+		var piv: Node3D = turrets[k][0]
+		var on: bool = k < bears.size() and bool(bears[k])
+		var tgt := world_target if on else piv.global_position - global_transform.basis.z * 1000.0
+		var d := tgt - piv.global_position
+		if d.length() < 1.0: continue
+		var up: Vector3 = global_transform.basis * Vector3(turrets[k][2])
+		if absf(d.normalized().dot(up.normalized())) > 0.99: up = global_transform.basis.z
+		piv.look_at(tgt, up)
 
-func muzzle_position() -> Vector3:
-	return muzzle.global_position
+func muzzle_position(k: int) -> Vector3:
+	return (turrets[k][1] as Node3D).global_position
 
 ## Where a system sits, in world space (Drive, Laser, Gun, Sensors, Radiators, Crew), for HUD callouts.
 func sys_position(sys: int) -> Vector3:
 	var r := 0.026 * length
-	var local: Vector3 = [Vector3(0, 0, _z(0.97)), turret.position, Vector3(0, -r * 1.45, _z(0.40)),
+	var local: Vector3 = [Vector3(0, 0, _z(0.97)), Vector3(0, r * 1.5, _z(0.40)), Vector3(0, -r * 1.45, _z(0.40)),
 		Vector3(0, 0, _z(0.02)), Vector3(0, r * 4.0, _z(0.57)), Vector3(0, 0, _z(0.25))][sys]
 	return global_transform * local
 
@@ -335,3 +356,15 @@ func show_state(s: Dictionary, delta: float) -> void:
 		m.emission_energy_multiplier = glow
 		m.albedo_color = rd[3] if health[4] > 0 else Color(0.3, 0.06, 0.04)
 	plume.visible = s["burning"]
+	# knocked-out turrets go dark
+	var thp: PackedFloat64Array = s["turret_hp"]
+	for k in turrets.size():
+		var dead := thp[k] <= 0
+		(turrets[k][4] as MeshInstance3D).visible = not dead
+		var bm := (turrets[k][3] as MeshInstance3D).material_override as StandardMaterial3D
+		if view_mode == 0:
+			bm.albedo_color = Color(0.25, 0.08, 0.05) if dead else Color(0.55, 0.58, 0.62)
+
+## Where turret k sits, in world space.
+func turret_position(k: int) -> Vector3:
+	return (turrets[k][0] as Node3D).global_position

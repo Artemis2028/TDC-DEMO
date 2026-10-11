@@ -29,6 +29,7 @@ public:
 
     void set_weapons_free(bool free);
     void set_armed(bool laser, bool on);
+    void set_turret_armed(int64_t turret, bool on);
     void set_fire_mode(int64_t mode, int64_t target_sys);
     void set_facing(int64_t facing);
     void set_burn(int64_t burn, double throttle);
