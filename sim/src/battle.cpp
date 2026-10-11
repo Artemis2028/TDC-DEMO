@@ -200,6 +200,10 @@ void Battle::set_turret_armed(int ship, int turret, bool on) {
     log(ship, "order", fmt("Laser turret %.0f ", turret + 1) + (on ? "armed" : "safed"));
 }
 
+void Battle::set_target_turret(int ship, int turret) {
+    ships_[ship].target_turret = turret < 0 || turret >= kTurrets ? -1 : turret;
+}
+
 bool Battle::turret_bears(int ship, int turret, int target) const {
     // The target lies in the battle plane. Seen from the ship it is ahead or astern by cos(rel) and off to the left or
     // right; a turret sees it if it is near the axis (the beam clears the hull lengthwise) or if the side it is on lies
@@ -308,7 +312,7 @@ void Battle::move(Ship& s) {
     if (s.facing == Facing::Away) want += kPi;
     Vec2 dir{0, 0};
     double drive = s.health[static_cast<int>(Sys::Drive)] / 100.0;
-    if (s.burn != Burn::Off && drive > 0) {
+    if (s.burn != Burn::Off) {
         switch (s.burn) {
             case Burn::Toward: dir = to; break;
             case Burn::Away: dir = to * -1; break;
@@ -330,11 +334,26 @@ void Battle::move(Ship& s) {
         dir = {0, 0};
         if (s.burn != Burn::Off) { s.burn = Burn::Off; log(s.id, "order", s.name + ": propellant exhausted, drive off"); }
     }
+    // The main drive only pushes along the nose. A burn within 30 deg of the nose uses it; anything else (sideways,
+    // or backwards while the nose stays on the enemy) uses the OMS pods: far weaker, but the ship keeps its facing.
+    s.main_firing = false;
+    s.oms_fwd = s.oms_left = 0;
     if (dir.len() > 0) {
-        double a = s.cls.accel * drive * s.throttle;
+        Vec2 nose{std::cos(s.heading), std::sin(s.heading)};
+        Vec2 left{-nose.y, nose.x};
+        double a;
+        if (dot(dir, nose) >= std::cos(kPi / 6) && drive > 0) {
+            a = s.cls.accel * drive * s.throttle;
+            s.heat += s.cls.drive_heat * s.throttle * kDt;
+            s.main_firing = true;
+        } else {
+            a = s.cls.oms_accel * s.throttle;
+            s.heat += s.cls.oms_heat * s.throttle * kDt;
+            s.oms_fwd = dot(dir, nose);
+            s.oms_left = dot(dir, left);
+        }
         s.dv_left = std::max(0.0, s.dv_left - a * kDt);
         s.vel = s.vel + dir * (a * kDt);
-        s.heat += s.cls.drive_heat * s.throttle * kDt;
     }
     s.pos = s.pos + s.vel * kDt;
     if (s.facing == Facing::Broadside) s.roll = wrap(s.roll + kRollRate * kDt);
@@ -477,6 +496,10 @@ void Battle::damage(Ship& t, Sys aim, double amount, bool laser, int from) {
             }
             const std::vector<int>& pool = exposed.empty() ? alive : exposed;
             int k = pool[static_cast<std::size_t>(rnd() * pool.size()) % pool.size()];
+            // A turret picked by the shooter is hit if the shooter can see it (it faces the shooter).
+            int want = ships_[from].target_turret;
+            if (aim == Sys::Laser && want >= 0)
+                for (int e : exposed) if (e == want) k = want;
             double& hp = t.turret_hp[static_cast<std::size_t>(k)];
             double was = hp;
             hp = std::max(0.0, hp - rem * kTurretFragility * (laser ? 1.0 : 0.8));

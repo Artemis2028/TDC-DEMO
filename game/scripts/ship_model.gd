@@ -12,6 +12,7 @@ var view_mode := 0          # 0 real colour, 1 armour condition
 var sec_parts: Array = [[], [], []]   # per section (nose, body, aft): [material, base colour]
 var radiators: Array = []             # [pivot, panel, material, base colour, span]
 var plume: MeshInstance3D
+var pods: Array = []                  # OMS pods: [outward direction, radial jet, axial jet]
 var turrets: Array = []               # [pivot (barrel along its -Z), muzzle, outward direction, ball, barrel]
 const TURRET_ANGLES := [deg_to_rad(45.0), deg_to_rad(165.0), deg_to_rad(290.0)]
 var _rad_open := 1.0
@@ -121,6 +122,19 @@ func build(is_mars: bool, gun_kind: int) -> void:
 		else:
 			_rod(Vector3(r * 0.22, y, _z(0.08)), Vector3(r * 0.22, y, _z(0.70)), r * 0.09, gm)
 			_rod(Vector3(-r * 0.22, y, _z(0.08)), Vector3(-r * 0.22, y, _z(0.70)), r * 0.09, gm)
+	# --- OMS pods: four thruster blocks around the hull near the middle, so they push without turning the ship
+	var pod_mat := _mat(Color(0.42, 0.44, 0.47), 1)
+	for k in 4:
+		var a := k * PI / 2
+		var out := Vector3(cos(a), sin(a), 0)
+		var pod := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(r * 0.7, r * 0.7, r * 1.2)
+		pod.mesh = bm
+		pod.material_override = pod_mat
+		pod.position = out * r * 1.25 + Vector3(0, 0, _z(0.48))
+		add_child(pod)
+		pods.append([out, _jet(r), _jet(r)])
 	# --- drive plume
 	plume = MeshInstance3D.new()
 	var pm := CylinderMesh.new()
@@ -141,6 +155,58 @@ func build(is_mars: bool, gun_kind: int) -> void:
 	plume.material_override = plm
 	plume.visible = false
 	add_child(plume)
+
+## A thruster jet: a short bright cone along its local -Y, hidden until used.
+func _jet(r: float) -> MeshInstance3D:
+	var j := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = r * 0.45       # wide end away from the nozzle (+Y points along the exhaust)
+	cm.bottom_radius = r * 0.15
+	cm.height = r * 5.5
+	cm.cap_top = false
+	cm.cap_bottom = false
+	j.mesh = cm
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_color = Color(0.82, 0.9, 1.0, 0.75)
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	j.material_override = m
+	j.visible = false
+	add_child(j)
+	return j
+
+## A rotation that points local +Y along dir.
+static func _basis_y(dir: Vector3) -> Basis:
+	var y := dir.normalized()
+	var x := y.cross(Vector3.FORWARD) if absf(y.dot(Vector3.FORWARD)) < 0.9 else y.cross(Vector3.RIGHT)
+	x = x.normalized()
+	return Basis(x, y, x.cross(y))
+
+## Show the OMS jets for a burn: exhaust (local, ship axes) is opposite to the push.
+func _show_oms(exhaust: Vector3) -> void:
+	var r := 0.026 * length
+	var radial := Vector3(exhaust.x, exhaust.y, 0)
+	var best := -1
+	var best_dot := 0.3
+	for k in pods.size():
+		var d: float = (pods[k][0] as Vector3).dot(radial.normalized()) if radial.length() > 0.2 else 0.0
+		if d > best_dot: best_dot = d; best = k
+	for k in pods.size():
+		var out: Vector3 = pods[k][0]
+		var base := out * r * 1.25 + Vector3(0, 0, _z(0.48))
+		var rj: MeshInstance3D = pods[k][1]
+		rj.visible = k == best
+		if rj.visible:
+			var dir := radial.normalized()
+			rj.scale = Vector3.ONE * clampf(radial.length(), 0.4, 1.0)
+			rj.transform = Transform3D(_basis_y(dir), base + out * r * 0.4 + dir * r * 2.75 * rj.scale.y).scaled_local(rj.scale)
+		var aj: MeshInstance3D = pods[k][2]
+		aj.visible = absf(exhaust.z) > 0.2
+		if aj.visible:
+			var dz := Vector3(0, 0, signf(exhaust.z))
+			var sc := clampf(absf(exhaust.z), 0.4, 1.0)
+			aj.transform = Transform3D(_basis_y(dz), base + dz * r * (0.6 + 2.75 * sc)).scaled_local(Vector3.ONE * sc)
 
 ## Turn the turrets that bear toward a point in world space; the others park pointing forward along the hull.
 func aim(world_target: Vector3, bears: Array) -> void:
@@ -356,6 +422,12 @@ func show_state(s: Dictionary, delta: float) -> void:
 		m.emission_energy_multiplier = glow
 		m.albedo_color = rd[3] if health[4] > 0 else Color(0.3, 0.06, 0.04)
 	plume.visible = s["burning"]
+	# OMS: the push in the battle plane, from (forward, left) in ship axes, turned into this model's own axes
+	var oms: Vector2 = s["oms"]
+	var h: float = s["heading"]
+	var push_sim := Vector2(cos(h), sin(h)) * oms.x + Vector2(-sin(h), cos(h)) * oms.y
+	var push_world := Vector3(push_sim.x, 0, -push_sim.y)
+	_show_oms(global_transform.basis.inverse() * (-push_world) if oms.length() > 0.01 and is_inside_tree() else Vector3.ZERO)
 	# knocked-out turrets go dark
 	var thp: PackedFloat64Array = s["turret_hp"]
 	for k in turrets.size():

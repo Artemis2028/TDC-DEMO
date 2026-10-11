@@ -7,6 +7,9 @@ const SPEED_NAMES := ["II", "½×", "1×", "2×", "5×", "10×", "CRZ"]
 const SYS_NAMES := ["Drive", "Laser", "Gun", "Sensors", "Radiators", "Crew"]
 const SYS_ABBR := ["DRV", "LSR", "GUN", "SNS", "RAD", "CRW"]
 const PRESET_VERB := ["Disable", "Disarm", "Silence", "Blind", "Cook", "Kill"]
+## Target select grid: [system, turret (-1 any), label, preset verb]
+const TARGETS := [[0, -1, "DRV", "Disable"], [1, 0, "LS1", "Disarm"], [1, 1, "LS2", "Disarm"], [1, 2, "LS3", "Disarm"],
+	[2, -1, "GUN", "Silence"], [3, -1, "SNS", "Blind"], [4, -1, "RAD", "Cook"], [5, -1, "CRW", "Kill"]]
 const MARS_R := 3389.5e3
 const ALT := 650e3          # display orbit height, chosen so the planet's limb shows as an arc
 const VP := Rect2(312, 72, 804, 684)
@@ -54,7 +57,6 @@ var menu: Control
 var end_screen: Control
 var overlay: Control
 var nameplate: Control
-var ship_tab: W.Btn
 var cond_badge: Control
 var clock_scr: W.Screen
 var speed_btns: Array = []
@@ -90,6 +92,11 @@ var paper: W.Paper
 var eo_label_t1 := ""
 var eo_label_t2 := ""
 var scope_over: Control
+var scope_rect := Rect2()
+var bracket_pos := Vector2(-999, -999)
+var pick_points: Array = []   # enemy components on screen this frame: [position in the view, system, turret, label]
+var sfx: Sfx
+var was_lasing := false
 var scope_foot_l: W.Txt
 var scope_foot_r: W.Txt
 
@@ -101,6 +108,13 @@ var shot_clicks: Array = []   # --click x,y (repeatable): synthetic clicks for c
 
 func _ready() -> void:
 	RenderingServer.set_default_clear_color(W.BG)
+	sfx = Sfx.new()
+	add_child(sfx)
+	if OS.get_cmdline_user_args().has("--dump-sfx"):
+		var dir: String = OS.get_cmdline_user_args()[OS.get_cmdline_user_args().find("--dump-sfx") + 1]
+		sfx.dump(dir)
+		get_tree().quit()
+		return
 	_build_world()
 	_build_hud()
 	_build_menu()
@@ -124,6 +138,7 @@ func _ready() -> void:
 		if args.has("--hold"): battle.set_weapons_free(false)
 		if args.has("--preset"): _set_mode(1)
 		if args.has("--broadside"): battle.set_facing(1)
+		if args.has("--burn"): battle.set_burn(int(args[args.find("--burn") + 1]), 1.0)
 		while battle.get_time() < shot_at and battle.get_winner() < 0:
 			battle.advance(1.0)
 			_track_heat()
@@ -226,12 +241,41 @@ func _start(cls: int) -> void:
 
 func _drain_events() -> void:
 	for e in battle.get_events(ev_index):
+		_event_sound(e)
 		if not ["hit", "burn-through", "disabled", "overheat", "out"].has(str(e["kind"])):
 			continue
 		log_lines.append([str(e["text"]), _clock(float(e["time"]))])
 	ev_index = battle.event_count()
 	while log_lines.size() > 6:
 		log_lines.pop_front()
+
+## What the crew hears: our own gun firing, enemy rounds striking our hull, alarms for our losses and overheating.
+func _event_sound(e: Dictionary) -> void:
+	if sfx == null or state != "battle" or battle.get_speed() == 0: return
+	var mine := int(e["ship"]) == 0
+	match str(e["kind"]):
+		"fire": if mine: sfx.play("coil", 0.0)
+		"hit": if mine: sfx.play("hit", -2.0, 0.15)
+		"disabled": if mine: sfx.play("alarm", -4.0, 0.0)
+		"overheat": if mine: sfx.play("klaxon", -4.0, 0.0)
+
+func _loop_sounds(delta: float) -> void:
+	if sfx == null: return
+	if state != "battle" or battle.get_speed() == 0 or battle.get_winner() >= 0:
+		sfx.stop_loops()
+		was_lasing = false
+		return
+	var own: Dictionary = battle.get_ship(0)
+	var foe: Dictionary = battle.get_ship(1)
+	var n := 0
+	for f in own["turret_firing"]:
+		if f: n += 1
+	if n > 0 and not was_lasing: sfx.play("charge", -6.0, 0.03)
+	was_lasing = n > 0
+	sfx.loop("laser", 0.18 * n, delta)
+	sfx.loop("sizzle", 0.5 if foe["laser_firing"] else 0.0, delta)
+	sfx.loop("drive", 0.6 if own["burning"] else 0.0, delta)
+	sfx.loop("oms", 0.35 if (own["oms"] as Vector2).length() > 0.01 else 0.0, delta)
 
 func _track_heat() -> void:
 	var t: float = battle.get_time()
@@ -246,6 +290,7 @@ func _process(delta: float) -> void:
 		battle.advance(delta)
 		_drain_events()
 		_track_heat()
+		_loop_sounds(delta)
 		if battle.get_winner() >= 0 and not end_screen.visible:
 			_show_end()
 	if battle:
@@ -419,19 +464,6 @@ func _build_viewport() -> void:
 	_add(drop_txt, Vector2(VP.end.x - 18 - 330, VP.position.y + 48))
 
 func _build_top() -> void:
-	# ship tabs
-	var names := [str(_own_name()), "Tarrant", "Meridian"]
-	for i in 3:
-		var w := 132.0
-		var b: W.Btn
-		if i == 0:
-			b = _btn("tab", names[0], Vector2(16 + i * (w + 2), 14), Vector2(w, 32))
-			b.active = true
-			ship_tab = b
-		else:
-			b = _locked("tab", names[i], Vector2(16 + i * (w + 2), 14), Vector2(w, 32))
-		b.key = str(i + 1)
-		b.font_size = 14
 	# nameplate
 	nameplate = _painter(Rect2(504, 0, 420, 62), func(c: Control):
 		c.draw_colored_polygon(PackedVector2Array([Vector2(0.5, 0.5), Vector2(419.5, 0.5), Vector2(391.5, 61.5), Vector2(28.5, 61.5)]), W.PANEL)
@@ -522,15 +554,11 @@ func _build_left() -> void:
 	_add(tgt_scr, Vector2(x, y))
 	y += 33
 	var cw := (260.0 - 12) / 4
-	for i in 8:
+	for i in TARGETS.size():
 		var pos := Vector2(x + (i % 4) * (cw + 4), y + (i / 4) * 44)
-		var b: W.Btn
-		if i < 6:
-			var si := i
-			b = _btn("cap", SYS_ABBR[i], pos, Vector2(cw, 40), func(): _pick_target(si))
-		else:
-			b = _locked("cap", ["RCT", "MAG"][i - 6], pos, Vector2(cw, 40))
-			b.sub = "--"
+		var si: int = TARGETS[i][0]
+		var tk: int = TARGETS[i][1]
+		var b := _btn("cap", TARGETS[i][2], pos, Vector2(cw, 40), func(): _pick_target(si, tk))
 		tgt_btns.append(b)
 	y += 92
 	# rotation / translation
@@ -672,6 +700,7 @@ func _build_right() -> void:
 	eo.size = Vector2(240, 240)
 	eo.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_add(eo, Vector2(x + 14, y + 14))
+	scope_rect = Rect2(x + 14, y + 14, 240, 240)
 	scope_over = _painter(Rect2(x + 14, y + 14, 240, 240), func(c: Control):
 		c.draw_rect(Rect2(0.5, 0.5, 239, 239), W.LINE, false, 1.0)
 		for corner in [[Vector2(4, 4), 1, 1], [Vector2(236, 4), -1, 1], [Vector2(4, 236), 1, -1], [Vector2(236, 236), -1, -1]]:
@@ -694,12 +723,14 @@ func _set_mode(mi: int) -> void:
 	var own: Dictionary = battle.get_ship(0)
 	preset_mode = mi == 1
 	battle.set_fire_mode(0 if mi == 2 else 1, int(own["target_sys"]))
+	if mi == 2: battle.set_target_turret(-1)
 
-func _pick_target(si: int) -> void:
+func _pick_target(si: int, turret := -1) -> void:
 	# Picking a target in auto switches to manual, as on the prototype.
 	if int(battle.get_ship(0)["fire_mode"]) == 0:
 		preset_mode = false
 	battle.set_fire_mode(1, si)
+	battle.set_target_turret(turret)
 
 func _toggle_free() -> void:
 	battle.set_weapons_free(not bool(battle.get_ship(0)["weapons_free"]))
@@ -761,7 +792,6 @@ func _update_hud() -> void:
 	var known := q > 0.3
 	var t: float = battle.get_time()
 	nameplate.queue_redraw()
-	ship_tab.set_text(str(own["name"]))
 	cond_badge.queue_redraw()
 	overlay.queue_redraw()
 	clock_scr.set_text("%03d:%02d:%02d" % [int(t) / 3600, (int(t) / 60) % 60, int(t) % 60])
@@ -838,15 +868,22 @@ func _update_hud() -> void:
 	# target select
 	var ts: int = own["target_sys"]
 	tgt_hdr.set_hint("TRK %d%%" % int(q * 100))
-	tgt_scr.set_text("%s|▸ %s|%s" % [_foe_name().replace("MRS ", ""), SYS_NAMES[ts].to_upper(), ("%d%%" % int(fh[ts])) if known else "??"])
-	for i in 6:
+	var tt: int = own["target_turret"]
+	var fthp: PackedFloat64Array = foe["turret_hp"]
+	var tname: String = SYS_NAMES[ts].to_upper() + ((" %d" % (tt + 1)) if ts == 1 and tt >= 0 else "")
+	var tval := fthp[tt] if ts == 1 and tt >= 0 else fh[ts]
+	tgt_scr.set_text("%s|▸ %s|%s" % [_foe_name().replace("MRS ", ""), tname, ("%d%%" % int(tval)) if known else "??"])
+	for i in TARGETS.size():
 		var b: W.Btn = tgt_btns[i]
-		var v := ("%d" % int(fh[i])) if known else "??"
+		var si: int = TARGETS[i][0]
+		var tk: int = TARGETS[i][1]
+		var hv: float = fthp[tk] if tk >= 0 else fh[si]
+		var v := ("%d" % int(hv)) if known else "??"
 		if preset_mode:
-			b.set_text(PRESET_VERB[i], SYS_ABBR[i])
+			b.set_text(TARGETS[i][3], TARGETS[i][2])
 		else:
-			b.set_text(SYS_ABBR[i], v)
-		b.set_state(i == ts)
+			b.set_text(TARGETS[i][2], v)
+		b.set_state(si == ts and (tk < 0 or tt < 0 or tk == tt))
 		var dash := not known
 		if b.dashed != dash:
 			b.dashed = dash
@@ -864,7 +901,10 @@ func _update_hud() -> void:
 		elif a == -2: on = facing == 0
 		else: on = a == (burn if burn != 0 else sel_burn)
 		(helm_btns[i] as W.Btn).set_state(on)
-	drive_txt.set_text("MAIN DRIVE · " + ("BURNING" if burn != 0 else "IDLE"), W.PRI if burn != 0 else W.MUTED)
+	var oms_on := (own["oms"] as Vector2).length() > 0.01
+	if own["burning"]: drive_txt.set_text("MAIN DRIVE · BURNING", W.PRI)
+	elif oms_on: drive_txt.set_text("OMS PODS · FIRING", W.SEC)
+	else: drive_txt.set_text("MAIN DRIVE · IDLE", W.MUTED)
 	thr_txt.set_text("THR %d%%" % int(round(throttle * 100)))
 	thr_segs.set_on(int(round(throttle * 20)), W.PRI if burn != 0 else W.KEY_LINE)
 	ignite.set_text("CUT DRIVE" if burn != 0 else "IGNITE")
@@ -1000,7 +1040,7 @@ func _draw_overlay(c: Control) -> void:
 	# titles
 	var title := ("TGT-1 · %s · EO RECON" % _foe_name()) if view_target else ("OWN SHIP · %s" % ("ARMOR CONDITION" if armor_view else "REAL COLOR · SUNLIT"))
 	c.draw_string(W.FH, Vector2(40, 38), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, W.TEXT)
-	var sub := "outline only until EO resolves it · selected component marked" if view_target else "right-drag to orbit · wheel to zoom · C chase cam · Tab enemy view"
+	var sub := ("click a part to target it" if battle.get_sensor_quality() > 0.3 else "EO can't resolve parts yet: close the range") if view_target else "right-drag to orbit · wheel to zoom · C chase cam · Tab enemy view"
 	c.draw_string(W.FM, Vector2(40, 56), sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, W.MUTED)
 	var health: PackedFloat64Array = own["health"]
 	var fh: PackedFloat64Array = foe["health"]
@@ -1022,6 +1062,7 @@ func _draw_overlay(c: Control) -> void:
 			c.draw_line(corner, corner - Vector2(0, s.y * 11), col, 2)
 		c.draw_colored_polygon(PackedVector2Array([p + Vector2(0, -6), p + Vector2(6, 0), p + Vector2(0, 6), p + Vector2(-6, 0)]), col)
 		W.text_c(c, W.FH, "TGT-1 · %s%s" % [_foe_name(), "  · OFF VIEW" if clamped else ""], p + Vector2(0, 38), 17, col)
+		bracket_pos = p
 		W.text_c(c, W.FM, "%.1f km · closing %.2f km/s" % [battle.get_range_km(), battle.get_closing() / 1000.0], p + Vector2(0, 54), 11, W.MUTED)
 		# callout: our most damaged system
 		var worst := -1
@@ -1032,8 +1073,24 @@ func _draw_overlay(c: Control) -> void:
 			_callout(c, cam.unproject_position(own_model.sys_position(worst)), "%s · %d%%" % [SYS_NAMES[worst].to_upper(), int(health[worst])], W.hp(health[worst]))
 	else:
 		var ts: int = own["target_sys"]
-		if not cam.is_position_behind(foe_model.sys_position(ts)):
-			_callout(c, cam.unproject_position(foe_model.sys_position(ts)), "%s · %s" % [SYS_NAMES[ts].to_upper(), ("%d%%" % int(fh[ts])) if known else "??"], W.PRI)
+		var tt: int = own["target_turret"]
+		var fthp: PackedFloat64Array = foe["turret_hp"]
+		# clickable component markers, once the EO can resolve the parts
+		pick_points.clear()
+		if known:
+			for pp in _foe_components():
+				if cam.is_position_behind(pp[0]): continue
+				var sp := cam.unproject_position(pp[0])
+				pick_points.append([sp, pp[1], pp[2], pp[3]])
+				var sel: bool = int(pp[1]) == ts and (int(pp[2]) < 0 or tt < 0 or int(pp[2]) == tt)
+				var mc := W.PRI if sel else W.SEC
+				c.draw_arc(sp, 9, 0, TAU, 20, Color(mc, 0.9), 1.5)
+				c.draw_string(W.FM, sp + Vector2(12, -6), pp[3], HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(mc, 0.9))
+		var tpos: Vector3 = foe_model.turret_position(tt) if ts == 1 and tt >= 0 else foe_model.sys_position(ts)
+		var tval: float = fthp[tt] if ts == 1 and tt >= 0 else fh[ts]
+		var tlab: String = SYS_NAMES[ts].to_upper() + ((" %d" % (tt + 1)) if ts == 1 and tt >= 0 else "")
+		if not cam.is_position_behind(tpos):
+			_callout(c, cam.unproject_position(tpos), "%s · %s" % [tlab, ("%d%%" % int(tval)) if known else "??"], W.PRI)
 		# resolved components panel
 		var pr := Rect2(40, 80, 210, 30 + 6 * 18)
 		c.draw_rect(pr, W.PANEL)
@@ -1097,7 +1154,7 @@ func _build_menu() -> void:
 	v.add_child(UI.locked("Fleet battles · missiles · EW · sensors", 400))
 	v.add_child(UI.button("Support development on Patreon", _open_patreon, UI.HOT, 400))
 	v.add_child(UI.button("Quit", func(): get_tree().quit(), UI.MUTED, 400))
-	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll · T nose on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · Right-drag orbit · Wheel zoom · Esc menu", 12, UI.FAINT)
+	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll · T nose on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Esc menu", 12, UI.FAINT)
 	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	keys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	keys.custom_minimum_size.x = 400
@@ -1158,7 +1215,48 @@ func _open_patreon() -> void:
 
 # ------------------------------------------------------------------ input
 
+## Click an enemy component in the enemy view or on the EO scope to target it; click the target bracket to look at it.
+func _click_target(p: Vector2) -> bool:
+	if battle == null or state != "battle": return false
+	if VP.has_point(p):
+		var local := p - VP.position
+		if not view_target:
+			if bracket_pos.distance_to(local) < 40: view_target = true; return true
+			return false
+		return _pick_near(local, pick_points)
+	if scope_rect.has_point(p) and battle.get_sensor_quality() > 0.3:
+		var res := float(eo_vp.size.x)
+		var pts: Array = []
+		for pp in _foe_components():
+			if eo_cam.is_position_behind(pp[0]): continue
+			pts.append([eo_cam.unproject_position(pp[0]) * (240.0 / res), pp[1], pp[2], pp[3]])
+		return _pick_near(p - scope_rect.position, pts)
+	return false
+
+func _pick_near(p: Vector2, pts: Array) -> bool:
+	var best: Array = []
+	var bd := 45.0
+	for pp in pts:
+		var d: float = (pp[0] as Vector2).distance_to(p)
+		if d < bd: bd = d; best = pp
+	if best.is_empty(): return false
+	_pick_target(best[1], best[2])
+	return true
+
+## The enemy's targetable parts in world space: [position, system, turret, label]
+func _foe_components() -> Array:
+	var out: Array = []
+	for i in TARGETS.size():
+		var si: int = TARGETS[i][0]
+		var tk: int = TARGETS[i][1]
+		if si == 2 and int(battle.get_ship(1)["gun"]) == 0: continue
+		var pos: Vector3 = foe_model.turret_position(tk) if tk >= 0 else foe_model.sys_position(si)
+		out.append([pos, si, tk, TARGETS[i][2]])
+	return out
+
 func _unhandled_input(e: InputEvent) -> void:
+	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT and _click_target(e.position):
+		return
 	if e is InputEventMouseButton:
 		if e.button_index == MOUSE_BUTTON_RIGHT or e.button_index == MOUSE_BUTTON_MIDDLE: dragging = e.pressed
 		if e.pressed and e.button_index == MOUSE_BUTTON_WHEEL_UP: dist = max(60.0, dist * 0.88)
@@ -1186,3 +1284,4 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_F2: _set_mode(1)
 			KEY_F3: _set_mode(2)
 			KEY_ESCAPE: _show_menu()
+			KEY_M: sfx.muted = not sfx.muted

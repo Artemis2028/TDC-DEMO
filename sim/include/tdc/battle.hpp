@@ -60,6 +60,8 @@ struct ShipClass {
     double cool_extended = 0, cool_retracted = 0;  // heat removed per second
     int crew = 0;
     double delta_v = 1800;       // m/s of manoeuvring the propellant allows
+    double oms_accel = 0.08;     // m/s^2 from the manoeuvring thrusters (OMS pods) for burns off the drive axis
+    double oms_heat = 0.15;      // heat per second while the OMS pods fire
     std::array<double, kSys> repair_base{};        // seconds for a team to repair a badly damaged system
 };
 
@@ -113,6 +115,9 @@ struct Ship {
     double disarmed_for = 0;
     bool overheated = false;      // set at 100 heat, cleared below 70: weapons locked meanwhile
     bool holding_heat = false;    // AI heat discipline: laser held between 90 and 60
+    bool main_firing = false;     // main drive lit this tick
+    double oms_fwd = 0, oms_left = 0;   // OMS thrust this tick in ship axes (forward, left), 0 when idle
+    int target_turret = -1;       // with target_sys Laser: which enemy turret to aim at (-1: whichever is exposed)
 
     int repair_teams() const;     // teams available in total (from crew)
     bool alive_sys(Sys s) const { return health[static_cast<int>(s)] > 0; }
@@ -159,6 +164,7 @@ public:
     void set_weapons_free(int ship, bool free);
     void set_armed(int ship, bool laser, bool on);           // laser: all three turrets
     void set_turret_armed(int ship, int turret, bool on);
+    void set_target_turret(int ship, int turret);           // -1 for any
     void set_fire_mode(int ship, FireMode m, Sys target);
     void set_facing(int ship, Facing f);
     void set_burn(int ship, Burn b, double throttle);
