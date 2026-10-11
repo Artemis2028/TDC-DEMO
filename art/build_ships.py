@@ -229,6 +229,38 @@ def box(name, size, mat, parent=None, bevel=0.0):
     return ob
 
 
+def beam_director(k, piv, R, m_shell, m_mirror, m_dark, m_rim, axle_out=None):
+    """Laser turret head: a beam director pointing along the pivot's local +Y. A closed, round housing (a sphere of
+    radius R) with its front cut flat; the aperture sits in that flat face, with a slightly concave primary mirror
+    set back inside and a small secondary mirror held on the beam axis by three spider vanes. Stub axles along local
+    Z reach the gimbal's trunnions (out to axle_out, default just outside the sphere). Returns the muzzle point
+    (centre of the front face, local). Names the game relies on: B_dome{k} (housing; scorched when knocked out)
+    and Lens{k} (primary mirror)."""
+    front = 0.6 * R                                  # the flat face: the sphere is cut here, 0.8 R across
+    cut = math.sqrt(R * R - front * front)
+    ap = 0.66 * R                                    # aperture radius
+    depth = front - 0.32 * R                         # primary mirror set back from the face
+    shell = []
+    t0 = math.acos(front / R)
+    for i in range(25):                              # round back, from the rear pole to the cut
+        t = math.pi - (math.pi - t0) * i / 24
+        shell.append((R * math.cos(t), R * math.sin(t)))
+    shell += [(front, ap + 0.03 * R), (front - 0.02 * R, ap), (depth - 0.02 * R, ap)]
+    revolve(f"B_dome{k}", shell, m_shell, piv, seg=72)
+    torus(f"B_rim{k}", (0, front, 0), (0, 1, 0), (ap + cut) / 2, 0.03 * R, m_rim, piv, seg=72, seg2=10)
+    revolve(f"Lens{k}", [(depth - 0.07 * R, 0.0), (depth - 0.03 * R, 0.45 * ap), (depth, ap)], m_mirror, piv, seg=72)
+    sec_y = front - 0.08 * R
+    revolve(f"B_secondary{k}", [(sec_y - 0.06 * R, 0.0), (sec_y - 0.06 * R, 0.15 * R), (sec_y, 0.15 * R), (sec_y, 0.0)], m_dark, piv, seg=32)
+    for i in range(3):
+        t = math.radians(90 + 120 * i)
+        d = Vector((math.cos(t), 0, math.sin(t)))
+        cylinder(f"B_spider{k}_{i}", d * 0.14 * R + Vector((0, sec_y - 0.03 * R, 0)), d * ap + Vector((0, sec_y - 0.03 * R, 0)), 0.016 * R, m_dark, piv, seg=8)
+    reach = axle_out if axle_out is not None else 1.06 * R
+    for side in (-1, 1):
+        cylinder(f"B_axle{k}_{side}", Vector((0, 0, side * 0.9 * R)), Vector((0, 0, side * reach)), 0.14 * R, m_dark, piv, seg=24)
+    return Vector((0, front, 0))
+
+
 def sphere(name, center, radius, mat, parent=None, seg=48, rings=24):
     verts, faces = [], []
     for i in range(rings + 1):
@@ -263,6 +295,7 @@ def build(mars: bool):
     m_dome = material("B_dome", (0.80, 0.82, 0.84) if not mars else (0.76, 0.66, 0.56), 0.25, 0.4)
     lens_c = (0.35, 0.65, 1.0) if not mars else (1.0, 0.55, 0.3)
     m_lens = material("lens", lens_c, 0.05, 0.0, emit=lens_c, emit_strength=4.0)
+    m_mirror = material("mirror", (0.04, 0.045, 0.055), 0.04, 1.0, emit=lens_c, emit_strength=0.25)
     m_gun = material("B_gun", (0.60, 0.53, 0.40), 0.35, 0.7)
     m_noz = material("nozzle", (0.12, 0.12, 0.13), 0.4, 0.8)
     m_bell = material("A_bell", (0.35, 0.33, 0.32), 0.3, 0.9)
@@ -367,11 +400,8 @@ def build(mars: bool):
             box(f"B_fork{k}_{side}", (0.14 * r, 0.30 * r, 0.07 * r), m_dark, base, bevel=0.02).location = (0, 0.02 * r, side * 0.335 * r)
             cylinder(f"B_pin{k}_{side}", Vector((0, 0, side * 0.29 * r)), Vector((0, 0, side * 0.38 * r)), 0.07 * r, m_gold, seg=24, parent=base)
         piv = empty(f"Turret{k}", (0, 0, 0), base)
-        sphere(f"B_dome{k}", (0, 0, 0), 0.3 * r, m_dome, piv, seg=64, rings=32)
-        # emitter: a short shrouded tube along the pivot's +Y (straight out at rest)
-        tube = revolve(f"B_emitter{k}", fillet([(0.12 * r, 0.0), (0.12 * r, 0.14 * r), (0.48 * r, 0.14 * r), (0.48 * r, 0.11 * r), (0.4 * r, 0.095 * r)], 0.03 * r, 4), m_dark, piv, seg=40)
-        lens = revolve(f"Lens{k}", [(0.44 * r, 0.0), (0.44 * r, 0.095 * r)], m_lens, piv, seg=40)
-        empty(f"Muzzle{k}", (0, 0.48 * r, 0), piv)
+        muzzle = beam_director(k, piv, 0.26 * r, m_dome, m_mirror, m_dark, m_gold, axle_out=0.31 * r)
+        empty(f"Muzzle{k}", muzzle, piv)
 
     # --- OMS: low blisters that melt into the hull at a forward and an aft station
     for (st, tag) in [(OMS_FWD, "F"), (OMS_AFT, "A")]:

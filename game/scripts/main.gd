@@ -1003,18 +1003,18 @@ func _update_hud() -> void:
 	var mk: PackedInt32Array = own["mark"]
 	var tmk: PackedInt32Array = own["turret_mark"]
 	var tval := test[tt] if ts == 1 and tt >= 0 else est[ts]
-	tgt_scr.set_text("%s|▸ %s|%s" % [_foe_name().replace("MRS ", ""), tname, ("~%d%%" % int(tval)) if known else "??"])
+	tgt_scr.set_text("%s|▸ %s|%s" % [_foe_name().replace("MRS ", ""), tname, ("≈%d%%" % int(tval)) if known else "??"])
 	for i in TARGETS.size():
 		var b: W.Btn = tgt_btns[i]
 		var si: int = TARGETS[i][0]
 		var hv: float = est[si]
-		var v := ("~%d" % int(hv)) if known else "??"
+		var v := ("≈%d" % int(hv)) if known else "??"
 		var m: int = mk[si]
 		if si == 1:
 			var all_same := tmk[0] == tmk[1] and tmk[1] == tmk[2]
 			m = tmk[tt] if ts == 1 and tt >= 0 else (tmk[0] if all_same else 0)
 		if si == 1 and ts == 1 and int(own["fire_mode"]) == 1:
-			v = ("ANY" if tt < 0 else "#%d" % (tt + 1)) + ((" · ~%d" % int(test[tt] if tt >= 0 else hv)) if known else "")
+			v = ("ANY" if tt < 0 else "#%d" % (tt + 1)) + ((" · ≈%d" % int(test[tt] if tt >= 0 else hv)) if known else "")
 		b.set_mark(m)
 		if preset_mode:
 			b.set_text(TARGETS[i][3], TARGETS[i][2])
@@ -1245,7 +1245,7 @@ func _draw_overlay(c: Control) -> void:
 		var tval: float = otest[tt] if ts == 1 and tt >= 0 else oest[ts]
 		var tlab: String = SYS_NAMES[ts].to_upper() + ((" %d" % (tt + 1)) if ts == 1 and tt >= 0 else "")
 		if not cam.is_position_behind(tpos):
-			_callout(c, cam.unproject_position(tpos), "%s · %s" % [tlab, ("~%d%%" % int(tval)) if known else "??"], W.PRI)
+			_callout(c, cam.unproject_position(tpos), "%s · %s" % [tlab, ("≈%d%%" % int(tval)) if known else "??"], W.PRI)
 		# resolved components panel
 		var pr := Rect2(40, 80, 210, 30 + 6 * 18)
 		c.draw_rect(pr, W.PANEL)
@@ -1256,7 +1256,7 @@ func _draw_overlay(c: Control) -> void:
 			var res := q > 0.25 + i * 0.05
 			var nm: String = str(SYS_NAMES[i]).to_upper()
 			c.draw_string(W.FM, Vector2(pr.position.x + 10, yy), nm, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, W.TEXT if res else W.FAINT)
-			var v := ("~%d%%" % int(oest[i])) if res else "??"
+			var v := ("≈%d%%" % int(oest[i])) if res else "??"
 			if omk[i] == 2: v = "KILL " + v
 			elif omk[i] == 1: v = "DEG " + v
 			var vw := W.FM.get_string_size(v, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
