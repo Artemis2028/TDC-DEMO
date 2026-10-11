@@ -18,6 +18,11 @@ struct Vec2 {
 };
 double dot(Vec2 a, Vec2 b);
 
+/// A direction in the ship's own axes: n along the nose, r to the ship's right, u to its top. Turret aim uses it.
+struct Vec3 {
+    double n = 0, r = 0, u = 0;
+};
+
 /// Ship systems. Each sits in one hull section and has 0-100 health.
 enum class Sys : int { Drive, Laser, Gun, Sensors, Radiators, Crew, Count };
 constexpr int kSys = static_cast<int>(Sys::Count);
@@ -35,7 +40,11 @@ constexpr double kTurretHalfArc = 1.8325957145940461;   // 105 deg
 /// Within this angle of the nose every turret can see past the hull.
 constexpr double kAxialClear = 0.17453292519943295;     // 10 deg
 /// Within this angle of the stern no turret can fire: the drive and its plume are in the way.
-constexpr double kAftBlind = 0.17453292519943295;       // 10 deg
+constexpr double kAftBlind = 0.17453292519943295;
+/// Turret slew: each turret swings at up to 30 deg/s (game assumption, set by the owner) and fires only when
+/// its optics point within 1 deg of the target. A turret whose target leaves its arc waits at the arc's edge.
+constexpr double kTurretSlew = 0.5235987755982988;      // 30 deg/s in rad/s
+constexpr double kOnTarget = 0.017453292519943295;      // 1 deg       // 10 deg
 
 enum class GunKind : int { None, Railgun, Coilgun };
 enum class Facing : int { Nose, Broadside, Away };
@@ -112,6 +121,7 @@ struct Ship {
     bool laser_firing = false;                     // any turret firing
     std::array<double, kTurrets> turret_hp{100, 100, 100};   // the Laser system's health is their mean
     std::array<bool, kTurrets> turret_firing{};
+    std::array<Vec3, kTurrets> turret_aim{};       // where each turret points, unit vector in ship axes
     double roll = 0;                               // radians about the ship's axis; turns while rolling broadside
     bool out = false;
     std::string out_reason;
@@ -185,6 +195,11 @@ public:
     double sensor_quality(int ship, int target) const;  // 0-1: EO track quality
     double hit_chance(int ship, int target) const;      // for the HUD
     bool turret_bears(int ship, int turret, int target) const;
+    /// Where turret k wants to point, in ship axes: at the target if it bears; just out of arc, at the arc's edge
+    /// nearest the target; safed, or with the target dead astern, stowed straight out.
+    Vec3 turret_goal(int ship, int turret, int target) const;
+    /// Angle (rad) between where turret k points and the target.
+    double turret_error(int ship, int turret, int target) const;
     int winner() const { return winner_; }              // -1 while fighting
     std::uint64_t state_hash() const;
 
@@ -193,6 +208,7 @@ private:
     void auto_repair(Ship& s);
     void move(Ship& s);
     void fire(Ship& s);
+    void slew(Ship& s);
     void land_shots();
     void heat(Ship& s);
     void repairs(Ship& s);

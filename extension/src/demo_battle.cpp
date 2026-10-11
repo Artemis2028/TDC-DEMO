@@ -53,14 +53,16 @@ Dictionary DemoBattle::get_ship(int64_t i) const {
     d["radiators_extended"] = s.radiators_extended;
     d["laser_firing"] = s.laser_firing;
     PackedFloat64Array thp;
-    Array tarm, tfire, tbear;
+    Array tarm, tfire, tbear, taim;
     int foe = static_cast<int>(i) == 0 ? 1 : 0;
     for (int k = 0; k < tdc::kTurrets; ++k) {
         std::size_t u = static_cast<std::size_t>(k);
         thp.push_back(s.turret_hp[u]); tarm.push_back(s.turret_armed[u]); tfire.push_back(s.turret_firing[u]);
         tbear.push_back(b_->turret_bears(static_cast<int>(i), k, foe));
+        const tdc::Vec3& a = s.turret_aim[u];   // ship axes: x along the nose, y to the right, z to the top
+        taim.push_back(Vector3(static_cast<real_t>(a.n), static_cast<real_t>(a.r), static_cast<real_t>(a.u)));
     }
-    d["turret_hp"] = thp; d["turret_armed"] = tarm; d["turret_firing"] = tfire; d["turret_bears"] = tbear;
+    d["turret_hp"] = thp; d["turret_armed"] = tarm; d["turret_firing"] = tfire; d["turret_bears"] = tbear; d["turret_aim"] = taim;
     d["roll"] = s.roll;
     d["burning"] = s.main_firing;
     d["oms"] = Vector2(static_cast<real_t>(s.oms_fwd), static_cast<real_t>(s.oms_left));

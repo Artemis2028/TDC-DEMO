@@ -12,7 +12,7 @@ var view_mode := 0                    # 0 real colour, 1 armour condition
 var sec_parts: Array = [[], [], []]   # per section (nose, body, aft): [material, base colour]
 var radiators: Array = []             # [material, base colour] of radiator surfaces that glow with heat
 var rad_pivots: Array = []            # radiator roots: scaling local X folds a wing against the hull
-var turrets: Array = []               # [pivot (emitter along its -Z), muzzle, lens, dome material, dome colour]
+var turrets: Array = []               # [head (emitter along its -Z), muzzle, lens, dome material, dome colour, base, base rest basis, head rest basis, last azimuth]
 var pods: Array = []                  # OMS nozzles: [radial node, axial node, outward dir, station "F"/"A", radial jet, axial jet]
 var plume: MeshInstance3D
 var plume_mat: ShaderMaterial
@@ -68,7 +68,8 @@ func build(is_mars: bool, gun_kind: int) -> void:
 		var lens := root.find_child("Lens%d" % k, true, false) as MeshInstance3D
 		var dome := root.find_child("B_dome%d" % k, true, false) as MeshInstance3D
 		var dm := dome.get_surface_override_material(0) as StandardMaterial3D
-		turrets.append([piv, root.find_child("Muzzle%d" % k, true, false), lens, dm, dm.albedo_color])
+		var base := root.find_child("TurretBase%d" % k, true, false) as Node3D
+		turrets.append([piv, root.find_child("Muzzle%d" % k, true, false), lens, dm, dm.albedo_color, base, base.basis, piv.basis, 0.0])
 	# guns: both kinds are in the model; show the one this ship carries
 	(root.find_child("Gun_Coil", true, false) as Node3D).visible = gun_kind == 2
 	(root.find_child("Gun_Rail", true, false) as Node3D).visible = gun_kind == 1
@@ -183,18 +184,32 @@ func _show_oms(exhaust: Vector3) -> void:
 				d = ((pods[k][2] as Vector3) + dz * 0.4).normalized()
 			aj.transform = Transform3D(_basis_y(d), p).scaled_local(Vector3(sc, OMS_PLUME_LENGTH * sc, sc))
 
-## Turn the turrets that bear toward a point in world space; the others park pointing forward along the hull.
-func aim(world_target: Vector3, bears: Array) -> void:
+## Point each turret where the battle rules say it points. aims: per turret, a unit vector in ship axes
+## (x along the nose, y to the right, z to the top), already limited by the rules to the 30 deg/s slew.
+## Each turret is a two-axis gimbal: the base (fork or cradle) turns about the mount axis (its local Z, since its
+## emitter rests along -Z, straight out of the hull), and the head tilts on the trunnions (its local Y).
+## Base rotation by az then head tilt by el sends the emitter to (-sin el cos az, -sin el sin az, -cos el) in the
+## base's rest frame; this solves that for az and el. (az, el) and (az + 180, -el) point the same way: the one
+## nearer the last azimuth is used, and near straight-out the azimuth is held, so the base never spins round.
+func aim(aims: Array) -> void:
 	if not is_inside_tree(): return
-	for k in turrets.size():
-		var piv: Node3D = turrets[k][0]
-		var on: bool = k < bears.size() and bool(bears[k])
-		var tgt := world_target if on else piv.global_position - global_transform.basis.z * 1000.0
-		var d := tgt - piv.global_position
-		if d.length() < 1.0: continue
-		var up: Vector3 = global_transform.basis.y
-		if absf(d.normalized().dot(up)) > 0.99: up = global_transform.basis.x
-		piv.look_at(tgt, up)
+	for k in mini(turrets.size(), aims.size()):
+		var t: Array = turrets[k]
+		var head: Node3D = t[0]
+		var base: Node3D = t[5]
+		var a: Vector3 = aims[k]
+		var world: Vector3 = global_transform.basis * Vector3(a.y, a.z, -a.x)          # ship axes to this node's
+		var rest: Basis = (base.get_parent() as Node3D).global_transform.basis.orthonormalized() * Basis(t[6]).orthonormalized()
+		var d: Vector3 = (rest.inverse() * world).normalized()
+		var az: float = t[8]
+		var off := sqrt(d.x * d.x + d.y * d.y)               # sin of the angle off straight out
+		if off > 0.03:
+			var az0 := atan2(-d.y, -d.x)
+			az = az0 + PI * roundf((az - az0) / PI)             # the equivalent solution nearest the last one
+		var el := atan2(-(d.x * cos(az) + d.y * sin(az)), -d.z)
+		t[8] = az
+		base.basis = Basis(t[6]) * Basis(Vector3(0, 0, 1), az)
+		head.basis = Basis(t[7]) * Basis(Vector3(0, 1, 0), el)
 
 func muzzle_position(k: int) -> Vector3:
 	return (turrets[k][1] as Node3D).global_position
