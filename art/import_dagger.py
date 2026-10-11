@@ -106,6 +106,10 @@ def main(save_blend):
     # around, lined up with the hull's axial seams, with the same paint and the same dark panel seams as the hull.
     for name in ("Armored tapered bow", "Rounded armored bow cap"):
         bpy.data.objects.remove(bpy.data.objects[name], do_unlink=True)
+    # the crew shell's front collar would leave a raised ring where the bow joins: take it off so the skin runs on
+    for ob in list(bpy.data.objects):
+        if ob.name.startswith("Crew protective shell end collar") and ob.matrix_world.translation.y > ours(-80):
+            bpy.data.objects.remove(ob, do_unlink=True)
     m_bow = bpy.data.materials["Pale aerospace protective panels"]
     m_seam = bpy.data.materials["Shadow-shield casing"]
     base, R, Lb = ours(-83.0), 7.0, NOSE_LENGTH
@@ -125,7 +129,7 @@ def main(save_blend):
     for poly in bow.data.polygons:
         poly.use_smooth = False
     # seams: rings every 4 m (12-sided, to sit flat on the plates) and lines along the plate edges
-    d = 0.0
+    d = 4.0
     while d < Lb - 1.0:
         rr = radius(d) * 1.004
         B.revolve("N_bow_seam", [(base + d + 0.05, rr), (base + d - 0.05, rr)], m_seam, seg=12)
