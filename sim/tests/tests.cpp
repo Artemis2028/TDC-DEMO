@@ -58,24 +58,6 @@ TEST(laser_falls_off_with_range_squared) {
     }
 }
 
-TEST(broadside_roll_cuts_laser_damage) {
-    // A target rolling broadside takes 35 % of the beam.
-    Battle a(1, 0), b(1, 0);
-    for (auto* x : {&a, &b}) {
-        const_cast<Ship&>(x->ships()[1]).weapons_free = false;
-        // Our turrets start on target (as after a few seconds of tracking), so the single tick below fires.
-        auto& me = const_cast<Ship&>(x->ships()[0]);
-        for (int k = 0; k < kTurrets; ++k) me.turret_aim[static_cast<std::size_t>(k)] = x->turret_goal(0, k, 1);
-    }
-    const_cast<Ship&>(b.ships()[1]).facing = Facing::Broadside;
-    a.step(); b.step();
-    double da = 120 - a.ships()[1].armor[0], db_body = 30 - b.ships()[1].armor[1];
-    double db_nose = 80 - b.ships()[1].armor[0];
-    CHECK(db_nose + db_body > 0);
-    CHECK(std::fabs((db_nose + db_body) - 0.35 * (80 - a.ships()[1].armor[0])) < 1e-6 || std::fabs((db_nose + db_body) / (80 - a.ships()[1].armor[0]) - 0.35) < 1e-6);
-    (void)da;
-}
-
 TEST(heat_locks_weapons_until_cool) {
     // At 100 heat nothing fires until the radiators bring it below 70.
     Battle b(2, 0);
@@ -212,6 +194,44 @@ TEST(turret_swings_at_30_deg_per_second) {
     for (int k = 0; k < kTurrets; ++k) CHECK(b.ships()[0].turret_firing[static_cast<std::size_t>(k)]);
 }
 
+// Armour our beam takes off the enemy in one tick, with the enemy side-on or nose-on to us, rolling or not.
+static double one_tick_burn(bool side_on, bool rolling) {
+    Battle b = placed(0);                                   // enemy 100 km dead ahead, our turrets on target
+    auto& foe = const_cast<Ship&>(b.ships()[1]);
+    foe.weapons_free = false; foe.burn = Burn::Off;
+    foe.heading = side_on ? 3.14159265358979323846 / 2 : 3.14159265358979323846;   // we are abeam of it / ahead of it
+    foe.facing = side_on ? Facing::Broadside : Facing::Nose;
+    foe.ai_controlled = false;
+    b.set_roll(1, rolling ? 1 : 0);
+    int sec = side_on ? 1 : 0;
+    double before = foe.armor[static_cast<std::size_t>(sec)];
+    b.step();
+    return before - b.ships()[1].armor[static_cast<std::size_t>(sec)];
+}
+
+TEST(rolling_spreads_the_beam_only_side_on) {
+    // Side-on, a rolling target keeps turning the burn spot away: it takes 35 % of the beam. Nose-on the beam lands on
+    // the nose cap, on the roll axis, so rolling changes nothing. Same geometry and sensor quality within each pair.
+    double side = one_tick_burn(true, false), side_roll = one_tick_burn(true, true);
+    double nose = one_tick_burn(false, false), nose_roll = one_tick_burn(false, true);
+    CHECK(side > 0 && nose > 0);
+    CHECK(std::fabs(side_roll - 0.35 * side) < 1e-9);
+    CHECK(std::fabs(nose_roll - nose) < 1e-12);
+}
+
+TEST(rolling_keeps_the_nose_on_the_enemy) {
+    // Rolling turns the ship about its own axis only: with the enemy dead ahead and the facing order "nose", the
+    // heading stays on the enemy while the roll angle turns at 20 deg/s (0.35 rad/s: 3.5 rad in 10 s, wrapped).
+    Battle b = placed(0);
+    auto& foe = const_cast<Ship&>(b.ships()[1]);
+    foe.weapons_free = false; foe.burn = Burn::Off; foe.vel = {0, 0}; foe.ai_controlled = false;
+    const_cast<Ship&>(b.ships()[0]).vel = {0, 0};
+    b.set_roll(0, 1);
+    for (int i = 0; i < 100; ++i) b.step();
+    CHECK(std::fabs(b.ships()[0].heading) < 1e-12);
+    CHECK(std::fabs(b.ships()[0].roll - (3.5 - 2 * 3.14159265358979323846)) < 1e-6);
+}
+
 TEST(turrets_hold_aim_through_a_broadside_roll) {
     // Rolling broadside turns the target around the ship's axis at the roll rate (20 deg/s), slower than the 30 deg/s
     // slew, so a turret keeps its aim; a turret coming into arc swings over before the one leaving drops out (the
@@ -223,6 +243,7 @@ TEST(turrets_hold_aim_through_a_broadside_roll) {
     foe.weapons_free = false; foe.burn = Burn::Off; foe.vel = {0, 0};
     me.vel = {0, 0};
     b.set_facing(0, Facing::Broadside);
+    b.set_roll(0, 1);
     double roll0 = me.roll;
     for (int i = 0; i < 200; ++i) {
         me.heat = 0;

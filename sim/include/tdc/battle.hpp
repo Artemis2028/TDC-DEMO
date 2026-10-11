@@ -72,7 +72,7 @@ struct ShipClass {
     double cool_extended = 0, cool_retracted = 0;  // heat removed per second
     int crew = 0;
     double delta_v = 1800;       // m/s of manoeuvring the propellant allows
-    double oms_accel = 0.08;     // m/s^2 from the manoeuvring thrusters (OMS pods) for burns off the drive axis
+    double oms_accel = 0.12;     // m/s^2 from the manoeuvring thrusters (OMS pods) for burns off the drive axis
     double oms_heat = 0.15;      // heat per second while the OMS pods fire
     std::array<double, kSys> repair_base{};        // seconds for a team to repair a badly damaged system
 };
@@ -122,7 +122,8 @@ struct Ship {
     std::array<double, kTurrets> turret_hp{100, 100, 100};   // the Laser system's health is their mean
     std::array<bool, kTurrets> turret_firing{};
     std::array<Vec3, kTurrets> turret_aim{};       // where each turret points, unit vector in ship axes
-    double roll = 0;                               // radians about the ship's axis; turns while rolling broadside
+    double roll = 0;                               // radians about the ship's axis
+    int roll_dir = 0;                              // rolling: +1 one way, -1 the other, 0 holding steady (any facing)
     bool out = false;
     std::string out_reason;
     double disarmed_for = 0;
@@ -180,6 +181,7 @@ public:
     void set_target_turret(int ship, int turret);           // -1 for any
     void set_fire_mode(int ship, FireMode m, Sys target);
     void set_facing(int ship, Facing f);
+    void set_roll(int ship, int dir);                       // roll about the ship's axis: -1, 0 (stop) or +1; keeps the facing
     void set_burn(int ship, Burn b, double throttle);
     void set_radiators(int ship, bool extended);
     bool order_repair(int ship, Sys s);   // false if no team is free or nothing to repair
