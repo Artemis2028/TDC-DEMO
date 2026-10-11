@@ -55,10 +55,10 @@ static ShipClass base_earth(const char* name) {
     c.accel = 0.42; c.turn_rate = 0.12;
     c.armor = {120, 40, 30}; c.structure = {160, 220, 160};
     c.placed = {Section::Aft, Section::Body, Section::Body, Section::Nose, Section::Body, Section::Body};
-    // laser_dps: demo balance, set so each Earth ship wins about 65 % of AI-vs-AI battles (100-seed sweeps with the
-    // faster handling, armour panels and fire control that believes the crew's kill marks: Dagger 2.32 -> 67 %, Lance 1.57 -> 65 %).
-    // Balance tips sharply around these values. Not physical.
-    c.laser_dps = 2.32; c.laser_range = 150e3; c.laser_heat = 2.2;
+    // laser_dps: demo balance, set so each Earth ship wins about 65 % of AI-vs-AI battles (100-seed sweeps with the AI
+    // closing to 20 km, armour panels and fire control that believes the crew's kill marks: Dagger 2.15 -> 68 %,
+    // Lance 1.22 -> 67 %). Balance tips sharply around these values. Not physical.
+    c.laser_dps = 2.15; c.laser_range = 150e3; c.laser_heat = 2.2;
     c.drive_heat = 0.6; c.cool_extended = 2.7; c.cool_retracted = 0.6;
     c.crew = 40;
     c.repair_base = {60, 45, 50, 40, 35, 70};
@@ -73,7 +73,7 @@ ShipClass lance_class() {
     c.gun = GunKind::Coilgun;
     c.gun_damage = 46; c.gun_reload = 18; c.gun_speed = 12e3; c.gun_range = 100e3; c.gun_heat = 9;
     c.ammo = 60;
-    c.laser_dps = 1.57;
+    c.laser_dps = 1.22;
     return c;
 }
 
@@ -377,9 +377,15 @@ void Battle::ai(Ship& s) {
     int e = enemy_of(s);
     if (e < 0) return;
     double r = range(s.id, e);
-    // Close to 80 % of gun range (60 % of laser range without a gun), then hold the range.
-    double hold = s.cls.gun != GunKind::None && s.alive_sys(Sys::Gun) && s.ammo > 0 ? 0.8 * s.cls.gun_range : 0.6 * s.cls.laser_range;
-    Burn want = r > hold ? Burn::Toward : (closing(s.id, e) > 20 ? Burn::Stop : Burn::Off);
+    // Demo AI: press the attack. Close to 20 km, inside every weapon's full-power range, then hold there, so a fight
+    // never stalls at long range with both sides' repairs keeping up. (A smarter AI comes later.)
+    // Approach no faster than the OMS pods can brake from (the nose stays on the enemy, so braking is off the drive
+    // axis): closing speed v with v^2 = 2 a d over the distance d left to the hold range, using 70 % of the pods'
+    // acceleration as margin, capped at 150 m/s. Burn toward when slower than that, brake when faster.
+    constexpr double kHold = 20e3;
+    double c = closing(s.id, e);
+    double want_c = r > kHold ? std::min(150.0, std::sqrt(2.0 * 0.7 * s.cls.oms_accel * (r - kHold))) : 0.0;
+    Burn want = c < want_c - 5.0 ? Burn::Toward : (c > want_c + 5.0 ? Burn::Away : Burn::Off);
     if (want != s.burn) { s.burn = want; s.throttle = 1; }
     // Radiators out once heat builds, folded away only when nearly cold (they are a target while out).
     if (s.heat > 25) s.radiators_extended = true;
