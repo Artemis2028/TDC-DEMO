@@ -24,6 +24,12 @@ const DRIVE_PLUME_MAX := 140.0
 const OMS_PLUME_LENGTH := 5.0
 var sys_nodes: Array = []
 var _rad_open := 1.0
+var gun_breech: Node3D                # barrel ends of the spinal gun (markers from the Blender scripts)
+var gun_muzzle: Node3D
+var _shots: Array = []               # firing effects in progress: [age s, wave ring, barrel glow, muzzle flash, jet, light]
+## Gun firing effect timing (real seconds, not battle time, so it reads the same at any time speed).
+const GUN_WAVE_TIME := 0.16           # the light running up the coils, breech to muzzle
+const GUN_FADE_TIME := 0.9            # barrel afterglow and muzzle flash fading out
 
 const OMS_FWD := 0.10      # OMS stations (fractions of the length from the nose); kept in step with build_ships.py
 const OMS_AFT := 0.765
@@ -73,6 +79,8 @@ func build(is_mars: bool, gun_kind: int) -> void:
 	# guns: both kinds are in the model; show the one this ship carries
 	(root.find_child("Gun_Coil", true, false) as Node3D).visible = gun_kind == 2
 	(root.find_child("Gun_Rail", true, false) as Node3D).visible = gun_kind == 1
+	gun_breech = root.find_child("Gun_Breech", true, false) as Node3D
+	gun_muzzle = root.find_child("Gun_Muzzle", true, false) as Node3D
 	for i in 6:
 		sys_nodes.append(root.find_child("Sys%d" % i, true, false))
 	# OMS nozzles and their jets
@@ -210,6 +218,102 @@ func aim(aims: Array) -> void:
 		t[8] = az
 		base.basis = Basis(t[6]) * Basis(Vector3(0, 0, 1), az)
 		head.basis = Basis(t[7]) * Basis(Vector3(0, 1, 0), el)
+
+## The spinal gun fires: the coils dump one after another, so a ring of light runs up the barrel from the breech to the
+## muzzle, the barrel glows behind it and cools; at the muzzle a flash and a short plasma jet (the armature's
+## vaporised trailing edge), and a brief light that catches the hull. The round itself is drawn by main.gd.
+func fire_gun() -> void:
+	if gun_breech == null or gun_muzzle == null: return
+	var colour := Color(1.0, 0.55, 0.25) if mars else Color(0.55, 0.8, 1.0)
+	var wave := MeshInstance3D.new()
+	var tm := TorusMesh.new()
+	tm.inner_radius = 0.9
+	tm.outer_radius = 1.6
+	wave.mesh = tm
+	wave.material_override = _glow_mat(colour * 6.0)
+	var glow := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = 1.15
+	cm.bottom_radius = 1.15
+	cm.height = 1.0
+	glow.mesh = cm
+	glow.material_override = _glow_mat(colour * 2.5)
+	var flash := MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 1.0
+	sm.height = 2.0
+	flash.mesh = sm
+	flash.material_override = _glow_mat(Color(1, 0.95, 0.85) * 3.0)
+	var jet := MeshInstance3D.new()
+	var jm := CylinderMesh.new()
+	jm.top_radius = 0.2
+	jm.bottom_radius = 2.2
+	jm.height = 1.0
+	jet.mesh = jm
+	jet.material_override = _glow_mat(colour * 4.0)
+	var light := OmniLight3D.new()
+	light.light_color = colour.lerp(Color.WHITE, 0.5)
+	light.omni_range = 70.0
+	light.shadow_enabled = false
+	for n in [wave, glow, flash, jet]:
+		(n as GeometryInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(n)
+	add_child(light)
+	_shots.append([0.0, wave, glow, flash, jet, light])
+
+func _glow_mat(c: Color) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.no_depth_test = false
+	m.albedo_color = c
+	return m
+
+## Advance the firing effects (real time).
+func _process(delta: float) -> void:
+	if _shots.is_empty(): return
+	var a := to_local(gun_breech.global_position)
+	var b := to_local(gun_muzzle.global_position)
+	var axis := (b - a).normalized()
+	var barrel := a.distance_to(b)
+	var basis_y := Basis(Quaternion(Vector3.UP, axis))     # cylinder and torus meshes run along their local Y
+	var done: Array = []
+	for sh in _shots:
+		sh[0] += delta
+		var t: float = sh[0]
+		var run := clampf(t / GUN_WAVE_TIME, 0.0, 1.0)              # how far the wave has got up the barrel
+		var fade := clampf((t - GUN_WAVE_TIME) / GUN_FADE_TIME, 0.0, 1.0)
+		var wave: MeshInstance3D = sh[1]
+		wave.visible = run < 1.0
+		wave.transform = Transform3D(basis_y, a + axis * barrel * run)
+		var glow: MeshInstance3D = sh[2]
+		var lit := maxf(0.02, barrel * run)                           # the barrel glows where the wave has passed
+		glow.transform = Transform3D(basis_y * Basis.from_scale(Vector3(1, lit, 1)), a + axis * lit * 0.5)
+		_set_alpha(glow, 0.55 * (1.0 - fade))
+		var flash: MeshInstance3D = sh[3]
+		var ft := clampf((t - GUN_WAVE_TIME) / 0.35, 0.0, 1.0)        # flash: grows fast, fades
+		flash.visible = t >= GUN_WAVE_TIME
+		flash.transform = Transform3D(Basis.from_scale(Vector3.ONE * (1.0 + 3.0 * sqrt(ft))), b)
+		_set_alpha(flash, 1.0 - ft)
+		var jet: MeshInstance3D = sh[4]
+		var jl := 3.0 + 18.0 * sqrt(ft)                               # plasma jet streams forward and thins out
+		jet.visible = t >= GUN_WAVE_TIME
+		jet.transform = Transform3D(basis_y * Basis.from_scale(Vector3(1.0 + ft, jl, 1.0 + ft)), b + axis * jl * 0.5)
+		_set_alpha(jet, 0.8 * (1.0 - ft))
+		var light: OmniLight3D = sh[5]
+		light.position = b
+		light.light_energy = (6.0 * (1.0 - ft) if t >= GUN_WAVE_TIME else 2.0 * run)
+		if t > GUN_WAVE_TIME + GUN_FADE_TIME:
+			done.append(sh)
+	for sh in done:
+		for i in range(1, 6): (sh[i] as Node).queue_free()
+		_shots.erase(sh)
+
+func _set_alpha(mi: MeshInstance3D, alpha: float) -> void:
+	var m := mi.material_override as StandardMaterial3D
+	m.albedo_color.a = clampf(alpha, 0.0, 1.0)
 
 func muzzle_position(k: int) -> Vector3:
 	return (turrets[k][1] as Node3D).global_position

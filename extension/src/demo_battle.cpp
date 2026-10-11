@@ -23,6 +23,7 @@ void DemoBattle::set_turret_armed(int64_t k, bool on) { b_->set_turret_armed(0, 
 void DemoBattle::set_target_turret(int64_t k) { b_->set_target_turret(0, static_cast<int>(k)); }
 void DemoBattle::set_fire_mode(int64_t m, int64_t t) { b_->set_fire_mode(0, static_cast<tdc::FireMode>(m), static_cast<tdc::Sys>(t)); }
 void DemoBattle::set_facing(int64_t f) { b_->set_facing(0, static_cast<tdc::Facing>(f)); }
+void DemoBattle::set_roll(int64_t dir) { b_->set_roll(0, static_cast<int>(dir)); }
 void DemoBattle::set_burn(int64_t burn, double th) { b_->set_burn(0, static_cast<tdc::Burn>(burn), th); }
 void DemoBattle::set_radiators(bool e) { b_->set_radiators(0, e); }
 bool DemoBattle::order_repair(int64_t s) { return b_->order_repair(0, static_cast<tdc::Sys>(s)); }
@@ -63,7 +64,7 @@ Dictionary DemoBattle::get_ship(int64_t i) const {
         taim.push_back(Vector3(static_cast<real_t>(a.n), static_cast<real_t>(a.r), static_cast<real_t>(a.u)));
     }
     d["turret_hp"] = thp; d["turret_armed"] = tarm; d["turret_firing"] = tfire; d["turret_bears"] = tbear; d["turret_aim"] = taim;
-    d["roll"] = s.roll;
+    d["roll"] = s.roll; d["roll_dir"] = s.roll_dir;
     d["burning"] = s.main_firing;
     d["oms"] = Vector2(static_cast<real_t>(s.oms_fwd), static_cast<real_t>(s.oms_left));
     d["target_turret"] = s.target_turret;
@@ -124,6 +125,7 @@ void DemoBattle::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_target_turret", "turret"), &DemoBattle::set_target_turret);
     ClassDB::bind_method(D_METHOD("set_fire_mode", "mode", "target_sys"), &DemoBattle::set_fire_mode);
     ClassDB::bind_method(D_METHOD("set_facing", "facing"), &DemoBattle::set_facing);
+    ClassDB::bind_method(D_METHOD("set_roll", "dir"), &DemoBattle::set_roll);
     ClassDB::bind_method(D_METHOD("set_burn", "burn", "throttle"), &DemoBattle::set_burn);
     ClassDB::bind_method(D_METHOD("set_radiators", "extended"), &DemoBattle::set_radiators);
     ClassDB::bind_method(D_METHOD("order_repair", "sys"), &DemoBattle::order_repair);

@@ -9,7 +9,7 @@ namespace tdc {
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
-constexpr double kRollRate = 0.35;         // rad/s (20 deg/s) while rolling broadside: slower than the turrets' 30 deg/s slew so they hold aim through the roll
+constexpr double kRollRate = 0.35;         // rad/s (20 deg/s) while rolling: slower than the turrets' 30 deg/s slew so they hold aim through the roll
 static_assert(kRollRate < kTurretSlew, "turrets must out-turn the roll or they lose aim");
 constexpr double kTurretFragility = 3.0;   // each turret holds a third of the laser: the three together are as tough as one
 double clamp01(double v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
@@ -49,12 +49,14 @@ const char* section_name(Section s) {
 static ShipClass base_earth(const char* name) {
     ShipClass c;
     c.name = name; c.faction = "Earth";
-    c.accel = 0.30; c.turn_rate = 0.035;
+    // accel m/s^2 and turn_rate rad/s: demo handling, raised so ships answer the helm (0.30 and 0.035 felt sluggish).
+    // The fastest ship stays inside the setting's 0.005-0.05 g combat-drive band (0.05 g = 0.49 m/s^2).
+    c.accel = 0.42; c.turn_rate = 0.12;
     c.armor = {120, 40, 30}; c.structure = {160, 220, 160};
     c.placed = {Section::Aft, Section::Body, Section::Body, Section::Nose, Section::Body, Section::Body};
-    // laser_dps: demo balance, set so each Earth ship wins about 65 % of AI-vs-AI battles (100-seed sweeps:
-    // Dagger 2.05 -> 67 %, Lance 1.55 -> 72 %; 2.5 and 1.4 gave 100 % and 41 %). Not a physical figure.
-    c.laser_dps = 2.05; c.laser_range = 150e3; c.laser_heat = 2.2;
+    // laser_dps: demo balance, set so each Earth ship wins about 65 % of AI-vs-AI battles (100-seed sweeps with the
+    // faster handling: Dagger 2.18 -> 64 %, Lance 1.6 -> 63 %). Balance tips sharply around these values. Not physical.
+    c.laser_dps = 2.18; c.laser_range = 150e3; c.laser_heat = 2.2;
     c.drive_heat = 0.6; c.cool_extended = 2.7; c.cool_retracted = 0.6;
     c.crew = 40;
     c.repair_base = {60, 45, 50, 40, 35, 70};
@@ -65,18 +67,18 @@ ShipClass dagger_class() { return base_earth("Dagger"); }
 
 ShipClass lance_class() {
     ShipClass c = base_earth("Lance");
-    c.accel = 0.26; c.turn_rate = 0.03;
+    c.accel = 0.36; c.turn_rate = 0.10;
     c.gun = GunKind::Coilgun;
     c.gun_damage = 46; c.gun_reload = 18; c.gun_speed = 12e3; c.gun_range = 100e3; c.gun_heat = 9;
     c.ammo = 60;
-    c.laser_dps = 1.55;
+    c.laser_dps = 1.6;
     return c;
 }
 
 ShipClass frigate_class() {
     ShipClass c;
     c.name = "Mars frigate"; c.faction = "Mars";
-    c.accel = 0.35; c.turn_rate = 0.04;
+    c.accel = 0.49; c.turn_rate = 0.14;
     c.armor = {80, 30, 30}; c.structure = {150, 200, 150};
     c.placed = {Section::Aft, Section::Body, Section::Body, Section::Nose, Section::Body, Section::Body};
     c.laser_dps = 0.9; c.laser_range = 110e3; c.laser_heat = 1.0;
@@ -280,8 +282,14 @@ void Battle::set_fire_mode(int ship, FireMode m, Sys target) {
 }
 void Battle::set_facing(int ship, Facing f) {
     ships_[ship].facing = f;
-    static const char* n[] = {"Nose to enemy", "Broadside, rolling", "Stern to enemy"};
+    static const char* n[] = {"Nose to enemy", "Side to enemy", "Stern to enemy"};
     log(ship, "order", std::string("Facing: ") + n[static_cast<int>(f)]);
+}
+void Battle::set_roll(int ship, int dir) {
+    dir = dir > 0 ? 1 : (dir < 0 ? -1 : 0);
+    if (ships_[ship].roll_dir == dir) return;
+    ships_[ship].roll_dir = dir;
+    log(ship, "order", dir == 0 ? "Roll stopped" : "Rolling");
 }
 void Battle::set_burn(int ship, Burn b, double throttle) {
     ships_[ship].burn = b; ships_[ship].throttle = clamp01(throttle);
@@ -414,7 +422,8 @@ void Battle::move(Ship& s) {
         s.vel = s.vel + dir * (a * kDt);
     }
     s.pos = s.pos + s.vel * kDt;
-    if (s.facing == Facing::Broadside) s.roll = wrap(s.roll + kRollRate * kDt);
+    // Rolling turns the ship about its own axis only: the nose stays where the facing order points it.
+    s.roll = wrap(s.roll + s.roll_dir * kRollRate * kDt);
 }
 
 Section Battle::hit_section(const Ship& t, Sys aim, const Ship& from) const {
@@ -462,7 +471,9 @@ void Battle::fire(Ship& s) {
             s.laser_firing = true;
         }
         dps *= fall * (0.5 + 0.5 * q);
-        if (t.facing == Facing::Broadside) dps *= 0.35;           // the spot keeps turning away
+        // A target rolling with its side to us keeps turning the burn spot away: 35 % of the beam stays on one
+        // patch. Nose-on, the beam lands on the nose cap on the roll axis, so rolling does not move the spot.
+        if (t.roll_dir != 0 && hit_section(t, Sys::Count, s) == Section::Body) dps *= 0.35;
         if (dps > 0) damage(t, aim, dps * kDt, true, s.id);
     }
     s.gun_cooldown = std::max(0.0, s.gun_cooldown - kDt);
@@ -639,7 +650,7 @@ std::uint64_t Battle::state_hash() const {
         for (double v : s.armor) mix(v);
         for (double v : s.turret_hp) mix(v);
         for (const Vec3& a : s.turret_aim) { mix(a.n); mix(a.r); mix(a.u); }
-        mix(s.roll); mix(s.crew); mix(s.ammo);
+        mix(s.roll); mix(s.roll_dir); mix(s.crew); mix(s.ammo);
     }
     mix(time_);
     return h;

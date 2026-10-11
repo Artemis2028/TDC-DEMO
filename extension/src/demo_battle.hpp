@@ -33,6 +33,7 @@ public:
     void set_target_turret(int64_t turret);
     void set_fire_mode(int64_t mode, int64_t target_sys);
     void set_facing(int64_t facing);
+    void set_roll(int64_t dir);
     void set_burn(int64_t burn, double throttle);
     void set_radiators(bool extended);
     bool order_repair(int64_t sys);

@@ -225,6 +225,9 @@ def main(save_blend):
     for xp in (-50, -35, -10, 0):
         B.cylinder("B_pylon", gout * 8.7 + Vector((0, ours(xp), 0)), gout * gr + Vector((0, ours(xp), 0)), 0.28, m_gun, coil, seg=12)
     B.empty("Gun_Rail", (0, 0, 0))     # the Earth hull carries no railgun; the node keeps the game's lookup simple
+    # barrel ends, for the firing effect: the coils fire from the breech (aft) to the muzzle (forward)
+    B.empty("Gun_Breech", gout * gr + Vector((0, ours(2), 0)))
+    B.empty("Gun_Muzzle", gout * gr + Vector((0, ours(-58), 0)))
 
     # reference points: Drive, Laser, Gun, Sensors, Radiators, Crew; and the drive exit
     for i, p in enumerate([(0, ours(70), 0), Vector((math.cos(B.TURRET_ANGLES[0]), 0, math.sin(B.TURRET_ANGLES[0]))) * (7.0 + 6.0 * HOUSING_SCALE) + Vector((0, ours(-65), 0)), gout * gr + Vector((0, ours(-25), 0)),

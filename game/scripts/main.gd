@@ -141,6 +141,7 @@ func _ready() -> void:
 		if args.has("--hold"): battle.set_weapons_free(false)
 		if args.has("--preset"): _set_mode(1)
 		if args.has("--broadside"): battle.set_facing(1)
+		if args.has("--roll"): battle.set_roll(1)
 		if args.has("--burn"):
 			throttle = float(args[args.find("--throttle") + 1]) if args.has("--throttle") else 1.0
 			battle.set_burn(int(args[args.find("--burn") + 1]), throttle)
@@ -243,6 +244,13 @@ func _build_world() -> void:
 	eo_cam.near = 10.0
 	eo_cam.far = 9.0e6
 	eo_cam.cull_mask = 1
+	# The EO view renders as small as 12 x 12 pixels. Bloom and ambient occlusion build chains of smaller and smaller
+	# images that cannot fit that, and on some GPUs (AMD Radeon 8060S) that crashed the game. The sensor view gets the
+	# same sky and tone mapping without them.
+	var eo_env: Environment = env.duplicate()
+	eo_env.glow_enabled = false
+	eo_env.ssao_enabled = false
+	eo_cam.environment = eo_env
 	eo_vp.add_child(eo_cam)
 	add_child(eo_vp)
 
@@ -304,6 +312,9 @@ func _start(cls: int) -> void:
 func _drain_events() -> void:
 	for e in battle.get_events(ev_index):
 		_event_sound(e)
+		if str(e["kind"]) == "fire":          # gun fired: coils and muzzle light up on whichever ship fired
+			var m: ShipModel = own_model if int(e["ship"]) == 0 else foe_model
+			if m: m.fire_gun()
 		if not ["hit", "burn-through", "disabled", "overheat", "out"].has(str(e["kind"])):
 			continue
 		log_lines.append([str(e["text"]), _clock(float(e["time"]))])
@@ -370,6 +381,11 @@ func _process(delta: float) -> void:
 					ev.position = p
 					ev.global_position = p
 					Input.parse_input_event(ev)
+		if shot_frames == 38 and OS.get_cmdline_user_args().has("--fx"):   # freeze the gun effect t seconds in
+			var args := OS.get_cmdline_user_args()
+			var m: ShipModel = foe_model if view_target else own_model
+			m.fire_gun()
+			m._process(float(args[args.find("--fx") + 1]))
 		if shot_frames == 40:
 			var img := get_viewport().get_texture().get_image()
 			img.save_png(shot_path)
@@ -410,21 +426,22 @@ func _update_world(delta: float) -> void:
 	sun.directional_shadow_max_distance = dist + 260.0
 	var fwd := (target_node.position - cam.position).normalized()
 	cam.look_at(target_node.position, Vector3.UP.rotated(fwd, -0.38))
-	# Beams and rounds.
-	lines.clear_surfaces()
-	lines.surface_begin(Mesh.PRIMITIVE_LINES, line_mat)
-	var any := false
+	# Beams and rounds. The line mesh is only rebuilt with something in it (an empty surface logs an error every frame).
+	var segs: Array = []
 	for k in 3:
 		if (own["turret_firing"] as Array)[k]:
-			_seg(own_model.muzzle_position(k), foe_model.position, Color(0.55, 0.85, 1.0, 0.9)); any = true
+			segs.append([own_model.muzzle_position(k), foe_model.position, Color(0.55, 0.85, 1.0, 0.9)])
 		if (foe["turret_firing"] as Array)[k]:
-			_seg(foe_model.muzzle_position(k), own_model.position, Color(1.0, 0.45, 0.25, 0.9)); any = true
+			segs.append([foe_model.muzzle_position(k), own_model.position, Color(1.0, 0.45, 0.25, 0.9)])
 	for s in battle.get_shots():
 		var p := _sim_to_world(s["pos"], focus)
 		var dir := (foe_model.position - own_model.position).normalized() if int(s["shooter"]) == 0 else (own_model.position - foe_model.position).normalized()
-		_seg(p - dir * 400.0, p, Color(1.6, 1.3, 0.6, 1)); any = true
-	lines.surface_end()
-	if not any: lines.clear_surfaces()
+		segs.append([p - dir * 400.0, p, Color(1.6, 1.3, 0.6, 1)])
+	lines.clear_surfaces()
+	if not segs.is_empty():
+		lines.surface_begin(Mesh.PRIMITIVE_LINES, line_mat)
+		for sg in segs: _seg(sg[0], sg[1], sg[2])
+		lines.surface_end()
 	# EO camera: a long lens is a camera placed close along the same line of sight, framed by the target's apparent size.
 	var q: float = battle.get_sensor_quality()
 	var res := int(clamp(12 + 180 * q * q, 12, 192))
@@ -623,8 +640,10 @@ func _build_left() -> void:
 	# rotation / translation
 	_add(W.Header.new("Rotation · translation", W.SEC, "", 260), Vector2(x, y))
 	y += 31
-	var helm := [["Q", "⟲ Roll", "roll"], ["W", "▲ Close", 1], ["E", "Roll ⟳", "roll"], ["X", "Match", 5],
-		["A", "◀ Left", 3], ["S", "▼ Open", 2], ["D", "Right ▶", 4], ["T", "On tgt", "nose"]]
+	# Q / E roll about the ship's own axis (press again to stop); the nose stays where the facing order puts it.
+	# T swings between nose-on (default) and side-on to the enemy.
+	var helm := [["Q", "⟲ Roll", "roll-"], ["W", "▲ Close", 1], ["E", "Roll ⟳", "roll+"], ["X", "Match", 5],
+		["A", "◀ Left", 3], ["S", "▼ Open", 2], ["D", "Right ▶", 4], ["T", "Side on", "side"]]
 	for i in helm.size():
 		var h: Array = helm[i]
 		var act = h[2]
@@ -820,10 +839,11 @@ func _toggle_ignite() -> void:
 
 func _helm(act) -> void:
 	if act is String:
-		if act == "roll":
-			battle.set_facing(0 if int(battle.get_ship(0)["facing"]) == 1 else 1)
-		elif act == "nose":
-			battle.set_facing(0)
+		var me: Dictionary = battle.get_ship(0)
+		match act:
+			"roll-": battle.set_roll(0 if int(me["roll_dir"]) == -1 else -1)
+			"roll+": battle.set_roll(0 if int(me["roll_dir"]) == 1 else 1)
+			"side": battle.set_facing(0 if int(me["facing"]) == 1 else 1)
 	else:
 		sel_burn = int(act)
 		if int(battle.get_ship(0)["burn"]) != 0:
@@ -964,13 +984,15 @@ func _update_hud() -> void:
 
 	# helm and drive
 	var facing: int = own["facing"]
+	var rolling: int = own["roll_dir"]
 	var burn: int = own["burn"]
-	var helm_act := [-1, 1, -1, 5, 3, 2, 4, -2]
+	var helm_act := [-1, 1, -3, 5, 3, 2, 4, -2]
 	for i in helm_btns.size():
 		var a: int = helm_act[i]
 		var on := false
-		if a == -1: on = facing == 1
-		elif a == -2: on = facing == 0
+		if a == -1: on = rolling == -1
+		elif a == -3: on = rolling == 1
+		elif a == -2: on = facing == 1
 		else: on = a == (burn if burn != 0 else sel_burn)
 		(helm_btns[i] as W.Btn).set_state(on)
 	var oms_on := (own["oms"] as Vector2).length() > 0.01
@@ -1226,7 +1248,7 @@ func _build_menu() -> void:
 	v.add_child(UI.locked("Fleet battles · missiles · EW · sensors", 400))
 	v.add_child(UI.button("Support development on Patreon", _open_patreon, UI.HOT, 400))
 	v.add_child(UI.button("Quit", func(): get_tree().quit(), UI.MUTED, 400))
-	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll · T nose on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Esc menu", 12, UI.FAINT)
+	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll left/right (again to stop) · T side-on / nose-on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Esc menu", 12, UI.FAINT)
 	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	keys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	keys.custom_minimum_size.x = 400
@@ -1360,8 +1382,9 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_COMMA: battle.set_speed(max(1, battle.get_speed() - 1))
 			KEY_TAB: view_target = not view_target
 			KEY_C: chase = not chase
-			KEY_Q, KEY_E: _helm("roll")
-			KEY_T: _helm("nose")
+			KEY_Q: _helm("roll-")
+			KEY_E: _helm("roll+")
+			KEY_T: _helm("side")
 			KEY_W: _helm(1)
 			KEY_S: _helm(2)
 			KEY_A: _helm(3)

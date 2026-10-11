@@ -145,26 +145,31 @@ func _hull_hit(rng: RandomNumberGenerator) -> PackedFloat32Array:
 		b[i] = bang + knock + ring
 	return b
 
-## Laser coming up to power: a short rising whine.
+## Laser coming up to power: a short, low rising swell (capacitors charging), not a whine.
 func _charge() -> PackedFloat32Array:
 	var b := _buf(0.35)
 	var ph := 0.0
 	for i in b.size():
 		var t := float(i) / RATE
-		ph += TAU * (300.0 + 2600.0 * t / 0.35) / RATE
-		b[i] = sin(ph) * 0.25 * minf(1.0, t / 0.05) * (1.0 - t / 0.35)
+		ph += TAU * (60.0 + 160.0 * t / 0.35) / RATE
+		b[i] = (sin(ph) + 0.3 * sin(2 * ph)) * 0.3 * minf(1.0, t / 0.05) * (1.0 - t / 0.35)
 	return b
 
-## The laser firing: the power plant's hum, the pumps, a thin optical whine. One second, made to loop cleanly.
+## The laser firing, felt through the frame rather than heard: a deep power-plant thrum (55 and 56 Hz beating
+## once a second) with soft overtones, and the coolant rushing (low-passed noise) swelling with a slow pulse.
+## No high tones: an earlier version with a 3 kHz whine sounded like a dentist's drill.
 func _laser_loop(rng: RandomNumberGenerator) -> PackedFloat32Array:
 	var b := _buf(1.2)
 	var lp := 0.0
+	var lp2 := 0.0
 	for i in b.size():
 		var t := float(i) / RATE
-		var hum := sin(TAU * 110 * t) * 0.35 + sin(TAU * 220 * t) * 0.2 + sin(TAU * 330 * t) * 0.08
-		var whine := sin(TAU * 3100 * t) * 0.05 * (0.7 + 0.3 * sin(TAU * 7 * t))
-		lp += ((rng.randf() * 2 - 1) - lp) * 0.05
-		b[i] = (hum + whine + lp * 0.25) * 0.7
+		# 110 and 165 Hz carry the thrum on laptop speakers, which can't reproduce 55 Hz
+		var thrum := sin(TAU * 55 * t) * 0.35 + sin(TAU * 56 * t) * 0.25 + sin(TAU * 110 * t) * 0.25 + sin(TAU * 165 * t) * 0.12 + sin(TAU * 220 * t) * 0.04
+		var pulse := 0.8 + 0.2 * sin(TAU * 4 * t)
+		lp += ((rng.randf() * 2 - 1) - lp) * 0.03
+		lp2 += (lp - lp2) * 0.08
+		b[i] = (thrum * pulse + lp2 * 3.0) * 0.6
 	return b
 
 ## The enemy beam on our armour: crackle and sizzle.

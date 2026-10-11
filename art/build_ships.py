@@ -406,6 +406,9 @@ def build(mars: bool):
     for sx in (-0.22, 0.22):
         b = box("B_rail", (0.09 * r, (0.70 - 0.08) * L / 2, 0.09 * r), m_gun, rail, bevel=0.03)
         b.location = (sx * r, (yz(0.08) + yz(0.70)) / 2, gy)
+    # barrel ends, for the firing effect: breech aft, muzzle forward (both guns share the line)
+    empty("Gun_Breech", (0, yz(0.74), gy))
+    empty("Gun_Muzzle", (0, yz(0.07), gy))
     for g in (coil, rail):
         for xp in (0.2, 0.35, 0.5, 0.65):
             cylinder("B_pylon", (0, yz(xp), -0.9 * r), (0, yz(xp), gy), 0.08 * r, m_gun, g, seg=12)

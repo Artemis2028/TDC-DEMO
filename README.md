@@ -16,7 +16,7 @@ written in C++ and compiled into a Godot extension. It does not contain the TDC 
 
 - Your ship (Dagger: laser; Lance: laser and spinal coilgun) against a Mars frigate with a railgun.
 - Fire control: weapons free or hold, auto or manual targeting of a system, presets (disable drive, blind, cook, disarm).
-- Maneuver: burn toward, away, sideways or to match velocity, with throttle; facing nose on, broadside roll or stern.
+- Maneuver: burn toward, away, sideways or to match velocity, with throttle; face the enemy nose-on or side-on, and roll about the ship's axis either way (rolling side-on spreads the enemy beam over the hull).
 - Heat: radiators extend (cool fast, can be shot off) or retract (safe, heat builds); at 100 weapons lock until below 70.
 - Damage control: repair teams from the crew; each job's timer varies with the damage (0.7-1.4x its estimate) and
   each repeat patch on the same system takes longer.
