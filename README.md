@@ -38,3 +38,12 @@ The extension lands in `game/bin/`; open `game/` in Godot 4.5 or later.
 ## Balance
 
 AI against AI over 40 seeds: Dagger wins about 65 %, Lance about 65 %. `sim/tests/tests.cpp` keeps both above the frigate.
+
+## Ship models
+
+The ships are built in Blender by `art/build_ships.py` (pure script, no hand modelling) and exported to
+`game/models/earth.glb` and `game/models/mars.glb`; `art/earth.blend` and `art/mars.blend` are the same models for
+editing by hand. Rebuild with `blender --background --python art/build_ships.py -- --blend` (or `python
+art/build_ships.py --blend` with the `bpy` package). The game finds parts by name (Turret0..2, Muzzle0..2, Rad*,
+OMS_*, Gun_Coil/Gun_Rail, Sys0..5, Nozzle; mesh names starting N_/B_/A_ belong to the nose/body/aft sections),
+so keep those names if you edit a model by hand.
