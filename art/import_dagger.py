@@ -27,9 +27,11 @@ from mathutils import Matrix, Vector  # noqa: E402
 import build_ships as B  # noqa: E402
 
 SRC = os.path.join(HERE, "source", "Dagger_Earth_Destroyer.blend")
-NOSE_LENGTH = 30.0           # new sloped bow, from the crew shell's front (concept x = -83) to the tip
+NOSE_LENGTH = 20.0           # sloped bow, from the crew shell's front (concept x = -83) to the start of the tip cap
+NOSE_BLUNT = 9.0             # the ogive is cut this far short of a point, leaving a wide rounded tip
+NOSE_TIP_EXTRA = 1.0         # how far the rounded cap stands out
 HOUSING_SCALE = 0.67         # laser housings at two thirds of the concept's size
-LENGTH = 83.0 + NOSE_LENGTH + 89.6   # tip to nozzle exit = 202.6 m; ShipModel uses the same number
+LENGTH = 83.0 + NOSE_LENGTH + NOSE_TIP_EXTRA + 89.6   # tip to nozzle exit = 193.6 m; ShipModel uses the same number
 _OLD_LENGTH = 180.0               # the concept's overall length; ShipModel uses the same number
 
 
@@ -100,22 +102,40 @@ def main(save_blend):
             reparent_keep(ob, piv)
         ri += 1
 
-    # --- a longer, sloped bow: a faceted ogive of armour plates in place of the concept's short blunt bow
+    # --- a sloped bow: a blunted ogive of flat armour plates in place of the concept's short blunt bow. Twelve plates
+    # around, lined up with the hull's axial seams, with the same paint and the same dark panel seams as the hull.
     for name in ("Armored tapered bow", "Rounded armored bow cap"):
         bpy.data.objects.remove(bpy.data.objects[name], do_unlink=True)
     m_bow = bpy.data.materials["Pale aerospace protective panels"]
+    m_seam = bpy.data.materials["Shadow-shield casing"]
     base, R, Lb = ours(-83.0), 7.0, NOSE_LENGTH
-    rho = (R * R + Lb * Lb) / (2 * R)                   # tangent ogive: the sides meet the hull with no kink
-    prof = []
-    for i in range(25):
-        x = Lb * i / 24                                  # distance from the tip
-        r = math.sqrt(rho * rho - (Lb - x) ** 2) + R - rho
-        prof.append((base + Lb - x, max(r, 0.0)))
-    prof[0] = (prof[0][0], 0.0)
-    bow = B.revolve("N_bow", prof, m_bow, seg=16)       # 16 flat plates around: sloped armour
+    full = Lb + NOSE_BLUNT                                # the ogive is cut short where its radius is NOSE_TIP_R
+    rho = (R * R + full * full) / (2 * R)                 # tangent ogive: the sides meet the hull with no kink
+
+    def radius(d):                                        # d: distance forward of the base
+        x = full - d                                      # distance from the (cut-off) point
+        return math.sqrt(max(rho * rho - (full - x) ** 2, 0.0)) + R - rho
+    prof = [(base + Lb * i / 30, radius(Lb * i / 30)) for i in range(31)]
+    tip_r = prof[-1][1]
+    for i in range(1, 9):                                 # a flattened rounded cap closes the blunt tip
+        a = math.pi / 2 * i / 8
+        prof.append((base + Lb + tip_r * 0.45 * math.sin(a), tip_r * math.cos(a)))
+    prof[-1] = (prof[-1][0], 0.0)
+    bow = B.revolve("N_bow", prof, m_bow, seg=12)
     for poly in bow.data.polygons:
         poly.use_smooth = False
-    B.revolve("N_bow_seam", [(base + 0.15, R * 1.004), (base - 0.15, R * 1.004)], bpy.data.materials["Shadow-shield casing"], seg=96)
+    # seams: rings every 4 m (12-sided, to sit flat on the plates) and lines along the plate edges
+    d = 0.0
+    while d < Lb - 1.0:
+        rr = radius(d) * 1.004
+        B.revolve("N_bow_seam", [(base + d + 0.05, rr), (base + d - 0.05, rr)], m_seam, seg=12)
+        d += 4.0
+    for k in range(12):
+        t = 2 * math.pi * k / 12
+        for (y0, r0), (y1, r1) in zip(prof[:30], prof[1:31]):
+            a = Vector((r0 * 1.003 * math.cos(t), y0, r0 * 1.003 * math.sin(t)))
+            b = Vector((r1 * 1.003 * math.cos(t), y1, r1 * 1.003 * math.sin(t)))
+            B.cylinder("N_bow_edge", a, b, 0.03, m_seam, seg=6)
 
     # --- the game's parts, in game axes (nose +Y, +X right, +Z top)
     m_gun = B.material("B_gun", (0.60, 0.53, 0.40), 0.35, 0.7)
