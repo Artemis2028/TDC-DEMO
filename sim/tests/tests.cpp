@@ -47,6 +47,8 @@ TEST(laser_falls_off_with_range_squared) {
         auto& me = const_cast<Ship&>(b.ships()[0]);
         auto& foe = const_cast<Ship&>(b.ships()[1]);
         foe.weapons_free = false; foe.burn = Burn::Off;
+        // Turrets start on target (as after a few seconds of tracking), so all ten ticks below fire.
+        for (int k = 0; k < kTurrets; ++k) me.turret_aim[static_cast<std::size_t>(k)] = b.turret_goal(0, k, 1);
         double q = b.sensor_quality(0, 1);
         double armor0 = foe.armor[0];
         for (int i = 0; i < 10; ++i) { foe.burn = Burn::Off; b.step(); }
@@ -59,7 +61,12 @@ TEST(laser_falls_off_with_range_squared) {
 TEST(broadside_roll_cuts_laser_damage) {
     // A target rolling broadside takes 35 % of the beam.
     Battle a(1, 0), b(1, 0);
-    for (auto* x : {&a, &b}) const_cast<Ship&>(x->ships()[1]).weapons_free = false;
+    for (auto* x : {&a, &b}) {
+        const_cast<Ship&>(x->ships()[1]).weapons_free = false;
+        // Our turrets start on target (as after a few seconds of tracking), so the single tick below fires.
+        auto& me = const_cast<Ship&>(x->ships()[0]);
+        for (int k = 0; k < kTurrets; ++k) me.turret_aim[static_cast<std::size_t>(k)] = x->turret_goal(0, k, 1);
+    }
     const_cast<Ship&>(b.ships()[1]).facing = Facing::Broadside;
     a.step(); b.step();
     double da = 120 - a.ships()[1].armor[0], db_body = 30 - b.ships()[1].armor[1];
@@ -149,6 +156,8 @@ static Battle placed(double rel_bearing_deg, double roll = 0) {
     double a = rel_bearing_deg * 3.14159265358979323846 / 180;
     foe.pos = {100e3 * std::cos(a), 100e3 * std::sin(a)};
     me.heading = 0; me.roll = roll;
+    // Turrets start already on target (as after a few seconds of tracking), so a single tick shows the beam.
+    for (int k = 0; k < kTurrets; ++k) me.turret_aim[static_cast<std::size_t>(k)] = b.turret_goal(0, k, 1);
     return b;
 }
 static int bearing_count(const Battle& b) { int n = 0; for (int k = 0; k < kTurrets; ++k) n += b.turret_bears(0, k, 1); return n; }
@@ -181,6 +190,46 @@ TEST(rolling_brings_each_turret_round) {
         CHECK(std::fabs(on / double(n) - 210.0 / 360.0) < 0.002);
     }
     for (int i = 0; i < 360; ++i) CHECK(bearing_count(placed(90, 2 * 3.14159265358979323846 * i / 360)) >= 1);
+}
+
+TEST(turret_swings_at_30_deg_per_second) {
+    // Stowed turrets point straight out, 90 deg from a target dead ahead. At 30 deg/s that is exactly 3.0 s of slew:
+    // 3 deg per 0.1 s tick, so after 29 ticks each is still 3 deg off (over the 1 deg firing tolerance) and on the
+    // 30th it is on target and fires. The target is 100 km off and motionless, so its bearing does not drift.
+    Battle b = placed(0);
+    auto& me = const_cast<Ship&>(b.ships()[0]);
+    auto& foe = const_cast<Ship&>(b.ships()[1]);
+    foe.weapons_free = false; foe.burn = Burn::Off; foe.vel = {0, 0};
+    me.vel = {0, 0};
+    for (int k = 0; k < kTurrets; ++k)
+        me.turret_aim[static_cast<std::size_t>(k)] = {0, std::cos(kTurretAngle[static_cast<std::size_t>(k)]), std::sin(kTurretAngle[static_cast<std::size_t>(k)])};
+    for (int i = 0; i < 29; ++i) b.step();
+    for (int k = 0; k < kTurrets; ++k) {
+        CHECK(std::fabs(b.turret_error(0, k, 1) - 3 * 3.14159265358979323846 / 180) < 1e-9);
+        CHECK(!b.ships()[0].turret_firing[static_cast<std::size_t>(k)]);
+    }
+    b.step();
+    for (int k = 0; k < kTurrets; ++k) CHECK(b.ships()[0].turret_firing[static_cast<std::size_t>(k)]);
+}
+
+TEST(turrets_hold_aim_through_a_broadside_roll) {
+    // Rolling broadside turns the target around the ship's axis at the roll rate (20 deg/s), slower than the 30 deg/s
+    // slew, so a turret keeps its aim; a turret coming into arc swings over before the one leaving drops out (the
+    // arcs overlap). Over a full roll and a bit, some turret fires on every tick. Heat is held at zero so the
+    // heat lock cannot interrupt the check.
+    Battle b = placed(90);
+    auto& me = const_cast<Ship&>(b.ships()[0]);
+    auto& foe = const_cast<Ship&>(b.ships()[1]);
+    foe.weapons_free = false; foe.burn = Burn::Off; foe.vel = {0, 0};
+    me.vel = {0, 0};
+    b.set_facing(0, Facing::Broadside);
+    double roll0 = me.roll;
+    for (int i = 0; i < 200; ++i) {
+        me.heat = 0;
+        b.step();
+        CHECK(b.ships()[0].laser_firing);
+    }
+    CHECK(std::fabs(b.ships()[0].roll - roll0) > 0.1);   // it really rolled
 }
 
 TEST(laser_power_is_shared_by_turrets) {

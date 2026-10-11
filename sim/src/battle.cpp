@@ -9,11 +9,26 @@ namespace tdc {
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
-constexpr double kRollRate = 0.6;          // rad/s while rolling broadside
+constexpr double kRollRate = 0.35;         // rad/s (20 deg/s) while rolling broadside: slower than the turrets' 30 deg/s slew so they hold aim through the roll
+static_assert(kRollRate < kTurretSlew, "turrets must out-turn the roll or they lose aim");
 constexpr double kTurretFragility = 3.0;   // each turret holds a third of the laser: the three together are as tough as one
 double clamp01(double v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
 std::string fmt(const char* f, double a) { char b[64]; std::snprintf(b, sizeof b, f, a); return b; }
 double wrap(double a) { while (a > kPi) a -= 2 * kPi; while (a < -kPi) a += 2 * kPi; return a; }
+double dot3(Vec3 a, Vec3 b) { return a.n * b.n + a.r * b.r + a.u * b.u; }
+Vec3 add3(Vec3 a, Vec3 b, double ka, double kb) { return {a.n * ka + b.n * kb, a.r * ka + b.r * kb, a.u * ka + b.u * kb}; }
+Vec3 unit3(Vec3 a) { double l = std::sqrt(dot3(a, a)); return l > 0 ? Vec3{a.n / l, a.r / l, a.u / l} : a; }
+double angle3(Vec3 a, Vec3 b) { double c = dot3(a, b); return std::acos(c > 1 ? 1 : (c < -1 ? -1 : c)); }
+/// Turn unit vector a toward unit vector b by at most `step` radians along the great circle between them.
+Vec3 turn_toward(Vec3 a, Vec3 b, double step) {
+    double ang = angle3(a, b);
+    if (ang <= step) return b;
+    double sn = std::sin(ang);
+    if (sn < 1e-9) return a;   // exactly opposite: no unique path (cannot happen inside a turret's arc)
+    return unit3(add3(a, b, std::sin(ang - step) / sn, std::sin(step) / sn));
+}
+/// Stowed direction of turret k: straight out from the hull at its mounting angle.
+Vec3 mount(int k) { double t = kTurretAngle[static_cast<std::size_t>(k)]; return {0, std::cos(t), std::sin(t)}; }
 }  // namespace
 
 double Vec2::len() const { return std::sqrt(x * x + y * y); }
@@ -97,6 +112,7 @@ static Ship make_ship(int id, const ShipClass& c, int side, bool player, Vec2 po
     s.armor = c.armor; s.structure = c.structure;
     s.crew = c.crew; s.ammo = c.ammo; s.dv_left = c.delta_v;
     if (c.gun == GunKind::None) s.health[static_cast<int>(Sys::Gun)] = 0;
+    for (int k = 0; k < kTurrets; ++k) s.turret_aim[static_cast<std::size_t>(k)] = mount(k);
     return s;
 }
 
@@ -217,6 +233,45 @@ bool Battle::turret_bears(int ship, int turret, int target) const {
     double out = kTurretAngle[static_cast<std::size_t>(turret)] + s.roll;
     return std::cos(out - side) >= std::cos(kTurretHalfArc);
 }
+namespace {
+/// Direction from ship s to ship t in s's own axes. The target lies in the battle plane at relative bearing rel; its
+/// sideways part points to the ship's right (0) or left (180 deg) around the axis, which the roll turns by -roll.
+Vec3 target_dir(const Ship& s, const Ship& t) {
+    double rel = std::atan2(t.pos.y - s.pos.y, t.pos.x - s.pos.x) - s.heading;
+    double lat = std::fabs(std::sin(rel));
+    double around = (std::sin(rel) > 0 ? kPi : 0.0) - s.roll;
+    return {std::cos(rel), lat * std::cos(around), lat * std::sin(around)};
+}
+}  // namespace
+
+Vec3 Battle::turret_goal(int ship, int turret, int target) const {
+    const Ship& s = ships_[ship];
+    std::size_t u = static_cast<std::size_t>(turret);
+    if (target < 0 || !s.turret_armed[u]) return mount(turret);
+    Vec3 t = target_dir(s, ships_[target]);
+    if (turret_bears(ship, turret, target)) return t;
+    // Out of arc: dead astern the turret stows; otherwise it waits at the edge of its arc nearest the target, so
+    // it is already on target when the roll or a turn brings the target round.
+    if (t.n <= -std::cos(kAftBlind)) return mount(turret);
+    Vec3 m = mount(turret);
+    double ang = angle3(m, t);
+    return ang <= kTurretHalfArc ? t : turn_toward(m, t, kTurretHalfArc);
+}
+
+double Battle::turret_error(int ship, int turret, int target) const {
+    return angle3(ships_[ship].turret_aim[static_cast<std::size_t>(turret)], target_dir(ships_[ship], ships_[target]));
+}
+
+void Battle::slew(Ship& s) {
+    // Each working turret swings toward its goal at up to kTurretSlew; a knocked-out turret stays where it froze.
+    int e = enemy_of(s);
+    for (int k = 0; k < kTurrets; ++k) {
+        std::size_t u = static_cast<std::size_t>(k);
+        if (s.turret_hp[u] <= 0) continue;
+        s.turret_aim[u] = turn_toward(s.turret_aim[u], turret_goal(s.id, k, e), kTurretSlew * kDt);
+    }
+}
+
 void Battle::set_fire_mode(int ship, FireMode m, Sys target) {
     ships_[ship].fire_mode = m; ships_[ship].target_sys = target;
     log(ship, "order", m == FireMode::Auto ? "Fire control: auto" : std::string("Target: enemy ") + sys_name(target));
@@ -264,7 +319,7 @@ bool Battle::order_repair(int ship, Sys s) {
 void Battle::step() {
     if (winner_ >= 0) return;
     for (auto& s : ships_) if (!s.out && s.ai_controlled) ai(s);
-    for (auto& s : ships_) if (!s.out) { if (s.auto_repair) auto_repair(s); move(s); fire(s); heat(s); repairs(s); }
+    for (auto& s : ships_) if (!s.out) { if (s.auto_repair) auto_repair(s); move(s); slew(s); fire(s); heat(s); repairs(s); }
     land_shots();
     for (auto& s : ships_) if (!s.out) check_out(s);
     time_ += kDt;
@@ -398,6 +453,7 @@ void Battle::fire(Ship& s) {
         for (int k = 0; k < kTurrets; ++k) {
             std::size_t u = static_cast<std::size_t>(k);
             if (!s.turret_armed[u] || s.turret_hp[u] <= 0 || !turret_bears(s.id, k, e)) continue;
+            if (turret_error(s.id, k, e) > kOnTarget) continue;   // still swinging onto the target
             dps += s.cls.laser_dps / kTurrets * (s.turret_hp[u] / 100.0);
             s.heat += s.cls.laser_heat / kTurrets * kDt;
             s.turret_firing[u] = true;
@@ -580,6 +636,7 @@ std::uint64_t Battle::state_hash() const {
         for (double v : s.health) mix(v);
         for (double v : s.armor) mix(v);
         for (double v : s.turret_hp) mix(v);
+        for (const Vec3& a : s.turret_aim) { mix(a.n); mix(a.r); mix(a.u); }
         mix(s.roll); mix(s.crew); mix(s.ammo);
     }
     mix(time_);

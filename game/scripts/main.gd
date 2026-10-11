@@ -394,8 +394,8 @@ func _update_world(delta: float) -> void:
 	foe_model.view_mode = 1 if armor_view and view_target and battle.get_sensor_quality() > 0.5 else 0
 	own_model.show_state(own, delta)
 	foe_model.show_state(foe, delta)
-	own_model.aim(foe_model.global_position, own["turret_bears"])
-	foe_model.aim(own_model.global_position, foe["turret_bears"])
+	own_model.aim(own["turret_aim"])
+	foe_model.aim(foe["turret_aim"])
 	planet.position = Vector3(0, -(MARS_R + ALT), 0)
 	# Camera: orbit (or chase) the ship in view; the view is rolled a little so the planet's limb runs across the lower left.
 	var target_node: Node3D = foe_model if view_target else own_model

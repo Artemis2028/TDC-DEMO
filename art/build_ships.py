@@ -358,9 +358,17 @@ def build(mars: bool):
             u = (s - core) / (1 - core)
             return bar_h * (1 - u) ** 2 * (1 + 2 * u) * (1 - u * 0.0)   # smoothstep-like fall, tangent to the hull
         hull_patch(f"B_barbette{k}", y0, a, hr, barbette, foot, m_hull[1], rings=48, seg=64, band=(0.69, 0.76, m_gold))
-        piv = empty(f"Turret{k}", out * (hr + bar_h) + Vector((0, y0, 0)))
+        # two-axis gimbal: the fork turns about the mount axis (TurretBase, local +Y outward), the dome and emitter
+        # tilt on the fork's pins (Turret, about its local Z = along the ship)
+        base = empty(f"TurretBase{k}", out * (hr + bar_h) + Vector((0, y0, 0)))
+        along = Vector((0, 1, 0))
+        base.rotation_euler = Matrix((out.cross(along), out, along)).transposed().to_euler()
+        for side in (-1, 1):
+            box(f"B_fork{k}_{side}", (0.14 * r, 0.30 * r, 0.07 * r), m_dark, base, bevel=0.02).location = (0, 0.02 * r, side * 0.335 * r)
+            cylinder(f"B_pin{k}_{side}", Vector((0, 0, side * 0.29 * r)), Vector((0, 0, side * 0.38 * r)), 0.07 * r, m_gold, seg=24, parent=base)
+        piv = empty(f"Turret{k}", (0, 0, 0), base)
         sphere(f"B_dome{k}", (0, 0, 0), 0.3 * r, m_dome, piv, seg=64, rings=32)
-        # emitter: a short shrouded tube along the pivot's +Y (the game turns the pivot toward the target)
+        # emitter: a short shrouded tube along the pivot's +Y (straight out at rest)
         tube = revolve(f"B_emitter{k}", fillet([(0.12 * r, 0.0), (0.12 * r, 0.14 * r), (0.48 * r, 0.14 * r), (0.48 * r, 0.11 * r), (0.4 * r, 0.095 * r)], 0.03 * r, 4), m_dark, piv, seg=40)
         lens = revolve(f"Lens{k}", [(0.44 * r, 0.0), (0.44 * r, 0.095 * r)], m_lens, piv, seg=40)
         empty(f"Muzzle{k}", (0, 0.48 * r, 0), piv)

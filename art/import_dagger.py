@@ -172,21 +172,31 @@ def main(save_blend):
         copies.append((made[0], made))
     for ob in star + port:                              # the concept's own side housings make way for the copies
         bpy.data.objects.remove(ob, do_unlink=True)
-    rotating = ("housing", "aperture rim", "inner bezel", "optical aperture")
+    # Two-axis gimbal, as the concept is built: the hull bearing and its ring stay on the hull; the cradle, trunnions
+    # and covers turn about the mount axis (TurretBase, local +Y outward); the housing, rim, bezel and aperture tilt
+    # on the trunnions (Turret, child of the base, tilting about its local Z = the trunnion axis, along the ship).
+    tilting = ("housing", "aperture rim", "inner bezel", "optical aperture")
+    turning = ("cradle", "trunnion")
     for k, (root_ob, parts) in enumerate(copies):
         centre = root_ob.matrix_world.translation.copy()
         out = Vector((centre.x, 0, centre.z)).normalized()
         along = Vector((0, 1, 0))
         m = Matrix((out.cross(along), out, along)).transposed().to_4x4()
         m.translation = centre
+        base = new_empty(f"TurretBase{k}", m)
         piv = new_empty(f"Turret{k}", m)
+        reparent_keep(piv, base)
         for ob in parts:
-            if ob.type == "MESH" and any(w in ob.name for w in rotating):
+            if ob.type != "MESH":
+                continue
+            if any(w in ob.name for w in tilting):
                 reparent_keep(ob, piv)
                 if "housing" in ob.name:
                     ob.name = f"B_dome{k}"
                 elif "optical aperture" in ob.name:
                     ob.name = f"Lens{k}"
+            elif any(w in ob.name for w in turning):
+                reparent_keep(ob, base)
         muz = new_empty(f"Muzzle{k}", Matrix.Translation(centre + out * 5.3 * HOUSING_SCALE))
         reparent_keep(muz, piv)
 
