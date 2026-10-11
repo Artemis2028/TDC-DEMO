@@ -229,6 +229,43 @@ TEST(laser_repair_patches_the_worst_turret) {
     CHECK(t >= base * (0.4 + 0.6 * 0.6) * 0.7 - 1e-9 && t <= base * (0.4 + 0.6 * 0.6) * 1.4 + 1e-9);
 }
 
+// ---------------------------------------------------------------- manoeuvring
+
+TEST(drive_pushes_along_the_nose_oms_does_the_rest) {
+    // Nose on the enemy: closing uses the main drive (accel x throttle); a sideways or opening burn uses the OMS pods
+    // at oms_accel and leaves the main drive dark, so the plume is only shown when it really fires.
+    for (Burn bn : {Burn::Toward, Burn::Left, Burn::Away}) {
+        Battle b(1, 0);
+        auto& foe = const_cast<Ship&>(b.ships()[1]);
+        foe.weapons_free = false; foe.ai_controlled = false;
+        b.set_burn(0, bn, 1.0);
+        b.step();
+        const Ship& me = b.ships()[0];
+        double a = me.vel.len() / Battle::kDt;
+        bool main = bn == Burn::Toward;
+        CHECK(me.main_firing == main);
+        CHECK(std::fabs(a - (main ? me.cls.accel : me.cls.oms_accel)) < 1e-9);
+        if (bn == Burn::Left) CHECK(std::fabs(me.oms_left - 1) < 1e-9 && std::fabs(me.oms_fwd) < 1e-9);
+        if (bn == Burn::Away) CHECK(std::fabs(me.oms_fwd + 1) < 1e-9);
+    }
+}
+
+TEST(picked_turret_is_hit_when_exposed) {
+    // Aiming at a named enemy turret puts laser damage on it if it faces the shooter; nose on, all three do.
+    Battle b = placed(0);
+    auto& me = const_cast<Ship&>(b.ships()[0]);
+    auto& foe = const_cast<Ship&>(b.ships()[1]);
+    foe.weapons_free = false;
+    foe.heading = 3.14159265358979323846;
+    foe.armor = {0, 0, 0};
+    foe.structure[0] = 0;   // nose already shot through: the beam reaches the turrets amidships
+    b.set_fire_mode(0, FireMode::Manual, Sys::Laser);
+    b.set_target_turret(0, 2);
+    for (int i = 0; i < 50; ++i) b.step();
+    CHECK(foe.turret_hp[2] < 100 && foe.turret_hp[0] == 100 && foe.turret_hp[1] == 100);
+    (void)me;
+}
+
 int main() {
     for (auto& [name, fn] : registry()) { std::printf("%s\n", name); fn(); }
     std::printf(failures ? "%d FAILED\n" : "all passed\n", failures);
