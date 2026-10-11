@@ -102,8 +102,8 @@ def main(save_blend):
             reparent_keep(ob, piv)
         ri += 1
 
-    # --- a sloped bow: a blunted ogive of flat armour plates in place of the concept's short blunt bow. Twelve plates
-    # around, lined up with the hull's axial seams, with the same paint and the same dark panel seams as the hull.
+    # --- a sloped bow: a smooth blunted ogive in place of the concept's short blunt bow, in the hull's paint, with
+    # panel seams continuing the hull's (rings every 4 m, lengthwise lines every 30 degrees).
     for name in ("Armored tapered bow", "Rounded armored bow cap"):
         bpy.data.objects.remove(bpy.data.objects[name], do_unlink=True)
     # the crew shell's front collar would leave a raised ring where the bow joins: take it off so the skin runs on
@@ -125,14 +125,12 @@ def main(save_blend):
         a = math.pi / 2 * i / 8
         prof.append((base + Lb + tip_r * 0.45 * math.sin(a), tip_r * math.cos(a)))
     prof[-1] = (prof[-1][0], 0.0)
-    bow = B.revolve("N_bow", prof, m_bow, seg=12)
-    for poly in bow.data.polygons:
-        poly.use_smooth = False
+    bow = B.revolve("N_bow", prof, m_bow, seg=64)     # smooth, like the hull it grows from (no facet breaks)
     # seams: rings every 4 m (12-sided, to sit flat on the plates) and lines along the plate edges
     d = 4.0
     while d < Lb - 1.0:
         rr = radius(d) * 1.004
-        B.revolve("N_bow_seam", [(base + d + 0.05, rr), (base + d - 0.05, rr)], m_seam, seg=12)
+        B.revolve("N_bow_seam", [(base + d + 0.05, rr), (base + d - 0.05, rr)], m_seam, seg=96)
         d += 4.0
     for k in range(12):
         t = 2 * math.pi * k / 12
@@ -244,6 +242,12 @@ def main(save_blend):
             with bpy.context.temp_override(object=ob, active_object=ob, selected_objects=[ob], selected_editable_objects=[ob]):
                 for m in list(ob.modifiers):
                     bpy.ops.object.modifier_apply(modifier=m.name)
+    # Shading: the concept's cylinders share their rim vertices between the side and the end caps, so plain smooth
+    # shading bends the side normals toward the caps and each section darkens toward its ends (very visible where the
+    # bow joins the crew shell). Sharp edges wherever faces meet at more than 35 degrees keep sides and caps apart.
+    for ob in bpy.data.objects:
+        if ob.type == "MESH":
+            ob.data.set_sharp_from_angle(angle=math.radians(35))
     groups = {}
     for ob in list(bpy.data.objects):
         if ob.type != "MESH":
