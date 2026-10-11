@@ -175,8 +175,15 @@ def main(save_blend):
     # Two-axis gimbal, as the concept is built: the hull bearing and its ring stay on the hull; the cradle, trunnions
     # and covers turn about the mount axis (TurretBase, local +Y outward); the housing, rim, bezel and aperture tilt
     # on the trunnions (Turret, child of the base, tilting about its local Z = the trunnion axis, along the ship).
+    # The concept's spherical housing is replaced by a beam director head (B.beam_director): flat aperture, primary
+    # mirror, secondary on a spider. Its cradle and trunnions are kept.
     tilting = ("housing", "aperture rim", "inner bezel", "optical aperture")
     turning = ("cradle", "trunnion")
+    lens_c = (0.35, 0.65, 1.0)
+    m_shell = B.material("B_dome", (0.80, 0.82, 0.84), 0.25, 0.4)
+    m_mirror = B.material("mirror", (0.04, 0.045, 0.055), 0.04, 1.0, emit=lens_c, emit_strength=0.25)
+    m_dk = B.material("dark", (0.16, 0.17, 0.19), 0.5, 0.5)
+    m_rim = B.material("marking", (0.86, 0.68, 0.16), 0.4, 0.2)
     for k, (root_ob, parts) in enumerate(copies):
         centre = root_ob.matrix_world.translation.copy()
         out = Vector((centre.x, 0, centre.z)).normalized()
@@ -186,19 +193,16 @@ def main(save_blend):
         base = new_empty(f"TurretBase{k}", m)
         piv = new_empty(f"Turret{k}", m)
         reparent_keep(piv, base)
-        for ob in parts:
+        for ob in list(parts):
             if ob.type != "MESH":
                 continue
             if any(w in ob.name for w in tilting):
-                reparent_keep(ob, piv)
-                if "housing" in ob.name:
-                    ob.name = f"B_dome{k}"
-                elif "optical aperture" in ob.name:
-                    ob.name = f"Lens{k}"
+                bpy.data.objects.remove(ob, do_unlink=True)      # the old ball housing and its lens
             elif any(w in ob.name for w in turning):
                 reparent_keep(ob, base)
-        muz = new_empty(f"Muzzle{k}", Matrix.Translation(centre + out * 5.3 * HOUSING_SCALE))
-        reparent_keep(muz, piv)
+        # round head the size of the concept's housing (12 m x 0.67), sitting in the cradle between the trunnions
+        muzzle = B.beam_director(k, piv, 3.9, m_shell, m_mirror, m_dk, m_rim)
+        B.empty(f"Muzzle{k}", muzzle, piv)
 
     # OMS: the concept's eight half-ball pods, one gimballed bell each. Name each bell exit for the game's jets;
     # the bells point outward, so the same exit serves for fore/aft burns (the game cants the jet).
