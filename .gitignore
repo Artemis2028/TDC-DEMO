@@ -4,3 +4,4 @@ game/.godot/
 game/bin/
 *.import
 export/
+*.blend1
