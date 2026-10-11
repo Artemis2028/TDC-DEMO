@@ -56,9 +56,9 @@ static ShipClass base_earth(const char* name) {
     c.armor = {120, 40, 30}; c.structure = {160, 220, 160};
     c.placed = {Section::Aft, Section::Body, Section::Body, Section::Nose, Section::Body, Section::Body};
     // laser_dps: demo balance, set so each Earth ship wins about 65 % of AI-vs-AI battles (100-seed sweeps with the
-    // faster handling and armour panels: Dagger 2.13 -> 72 %, Lance 1.57 -> 67 %). Balance tips sharply around these
-    // values. Not physical.
-    c.laser_dps = 2.13; c.laser_range = 150e3; c.laser_heat = 2.2;
+    // faster handling, armour panels and fire control that believes the crew's kill marks: Dagger 2.32 -> 67 %, Lance 1.57 -> 65 %).
+    // Balance tips sharply around these values. Not physical.
+    c.laser_dps = 2.32; c.laser_range = 150e3; c.laser_heat = 2.2;
     c.drive_heat = 0.6; c.cool_extended = 2.7; c.cool_retracted = 0.6;
     c.crew = 40;
     c.repair_base = {60, 45, 50, 40, 35, 70};
@@ -147,7 +147,8 @@ static Ship make_ship(int id, const ShipClass& c, int side, bool player, Vec2 po
 
 // ---------------------------------------------------------------- battle
 
-Battle::Battle(std::uint64_t seed, int player_class, double start_range_m) : rng_(seed * 0x9E3779B97F4A7C15ull + 1) {
+Battle::Battle(std::uint64_t seed, int player_class, double start_range_m)
+    : rng_(seed * 0x9E3779B97F4A7C15ull + 1), est_rng_(seed * 0xD1B54A32D192ED03ull + 7) {
     ShipClass mine = player_class == 1 ? lance_class() : dagger_class();
     ships_.push_back(make_ship(0, mine, 0, true, {0, 0}, 0));
     ships_.push_back(make_ship(1, frigate_class(), 1, false, {start_range_m, 0}, kPi));
@@ -156,6 +157,11 @@ Battle::Battle(std::uint64_t seed, int player_class, double start_range_m) : rng
     ships_[1].ai_controlled = true;
     ships_[1].fire_mode = FireMode::Auto;
     log(0, "order", "Battle stations. Enemy frigate at " + fmt("%.0f km", start_range_m / 1000));
+}
+
+double Battle::est_rnd() {
+    est_rng_ ^= est_rng_ >> 12; est_rng_ ^= est_rng_ << 25; est_rng_ ^= est_rng_ >> 27;
+    return static_cast<double>((est_rng_ * 2685821657736338717ull) >> 11) * (1.0 / 9007199254740992.0);
 }
 
 double Battle::rnd() {
@@ -354,7 +360,7 @@ bool Battle::order_repair(int ship, Sys s) {
 void Battle::step() {
     if (winner_ >= 0) return;
     for (auto& s : ships_) if (!s.out && s.ai_controlled) ai(s);
-    for (auto& s : ships_) if (!s.out) { if (s.auto_repair) auto_repair(s); move(s); slew(s); fire(s); heat(s); repairs(s); }
+    for (auto& s : ships_) if (!s.out) { if (s.auto_repair) auto_repair(s); update_estimates(s); move(s); slew(s); fire(s); heat(s); repairs(s); }
     land_shots();
     for (auto& s : ships_) if (!s.out) check_out(s);
     time_ += kDt;
@@ -503,7 +509,7 @@ void Battle::fire(Ship& s) {
     if (s.fire_mode == FireMode::Auto)
         // Auto fire control goes for whatever can still shoot back, then the drive, then the crew.
         for (Sys pick : {Sys::Laser, Sys::Gun, Sys::Drive, Sys::Crew})
-            if (t.alive_sys(pick) && !(pick == Sys::Gun && t.ammo <= 0)) { aim = pick; break; }
+            if (believed_alive(s, t, pick)) { aim = pick; break; }
     if (aim == Sys::Radiators && !t.radiators_extended) aim = Sys::Count;   // nothing outside to hit
     s.turret_firing.fill(false);
     if (r <= 3 * s.cls.laser_range && !s.holding_heat) {
@@ -581,7 +587,7 @@ void Battle::damage(Ship& t, Sys aim, double amount, bool laser, int from) {
         // The flash of a breach can look like a kill: a chance of a false call on a system in that section.
         std::vector<int> inside;
         for (int s = 0; s < kSys; ++s) if (t.cls.placed[s] == entry && t.health[s] > 0) inside.push_back(s);
-        if (!inside.empty()) assess(from, t, sys_name(static_cast<Sys>(inside[static_cast<std::size_t>(rnd() * inside.size()) % inside.size()])), false, false);
+        if (!inside.empty()) assess(from, t, static_cast<Sys>(inside[static_cast<std::size_t>(rnd() * inside.size()) % inside.size()]), -1, false);
     }
     if (rem <= 0) {
         if (!laser) log(t.id, "hit", std::string("Hit on the ") + section_name(entry) + " of " + t.name + ": stopped by the armour");
@@ -636,8 +642,8 @@ void Battle::damage(Ship& t, Sys aim, double amount, bool laser, int from) {
             if (!laser) log(t.id, "hit", std::string("Hit on ") + t.name + fmt(": laser turret %.0f", k + 1) + fmt(" at %.0f %%", hp));
             if (was > 0 && hp <= 0) {
                 log(t.id, "disabled", t.name + fmt(": laser turret %.0f knocked out", k + 1));
-                assess(from, t, fmt("laser turret %.0f", k + 1), true, true);
-            } else if (!laser || (was > 50 && hp <= 50)) assess(from, t, fmt("laser turret %.0f", k + 1), true, false);
+                assess(from, t, Sys::Laser, k, true);
+            } else if (!laser || (was > 50 && hp <= 50)) assess(from, t, Sys::Laser, k, false);
             return;
         }
         t.health[v] = std::max(0.0, t.health[v] - rem * (laser ? 1.0 : 0.8));
@@ -648,15 +654,62 @@ void Battle::damage(Ship& t, Sys aim, double amount, bool laser, int from) {
         if (!laser) log(t.id, "hit", std::string("Hit on ") + t.name + ": " + sys_name(victim) + fmt(" at %.0f %%", t.health[v]));
         if (old > 0 && t.health[v] <= 0) {
             log(t.id, "disabled", std::string(t.name) + ": " + sys_name(victim) + " knocked out");
-            assess(from, t, sys_name(victim), false, true);
-        } else if (!laser || (old > 50 && t.health[v] <= 50)) assess(from, t, sys_name(victim), false, false);
+            assess(from, t, victim, -1, true);
+        } else if (!laser || (old > 50 && t.health[v] <= 50)) assess(from, t, victim, -1, false);
         return;
     }
 }
 
+// ---------------------------------------------------------------- estimates and marks
+
+void Battle::update_estimates(Ship& s) {
+    // Every 5 s the crew reads the enemy's state off the EO track: the true health plus an error that grows as the
+    // track gets worse (spread +/-5 % with a perfect track, +/-30 % with none), rounded to 10. Uses its own random
+    // stream, so the estimates never change how the battle goes. Demo rules (assumption, not a sensor model).
+    if (time_ + 1e-9 < s.est_due) return;
+    s.est_due = time_ + 5.0;
+    int e = enemy_of(s);
+    if (e < 0) return;
+    const Ship& t = ships_[e];
+    double spread = 5.0 + 25.0 * (1.0 - sensor_quality(s.id, e));
+    auto read = [&](double truth) {
+        double v = truth + spread * (2.0 * est_rnd() - 1.0);
+        return std::clamp(std::round(v / 10.0) * 10.0, 0.0, 100.0);
+    };
+    for (int k = 0; k < kSys; ++k) s.est[static_cast<std::size_t>(k)] = read(t.health[static_cast<std::size_t>(k)]);
+    for (int k = 0; k < kTurrets; ++k) s.turret_est[static_cast<std::size_t>(k)] = read(t.turret_hp[static_cast<std::size_t>(k)]);
+    if (t.cls.gun == GunKind::None) s.est[static_cast<int>(Sys::Gun)] = 0;   // plainly no gun to see
+    // The computer flying the player's ship takes a kill mark off again when the estimate shows the part working
+    // (repaired, or a false call); a human player decides that for themselves.
+    if (s.player && s.ai_controlled) {
+        for (int k = 0; k < kSys; ++k)
+            if (s.mark[static_cast<std::size_t>(k)] == Mark::Killed && s.est[static_cast<std::size_t>(k)] >= 40) s.mark[static_cast<std::size_t>(k)] = Mark::None;
+        for (int k = 0; k < kTurrets; ++k)
+            if (s.turret_mark[static_cast<std::size_t>(k)] == Mark::Killed && s.turret_est[static_cast<std::size_t>(k)] >= 40) s.turret_mark[static_cast<std::size_t>(k)] = Mark::None;
+    }
+}
+
+void Battle::set_mark(int ship, Sys sys, int turret, Mark m) {
+    Ship& s = ships_[ship];
+    if (sys == Sys::Laser && turret >= 0 && turret < kTurrets) s.turret_mark[static_cast<std::size_t>(turret)] = m;
+    else if (sys != Sys::Count) s.mark[static_cast<int>(sys)] = m;
+}
+
+bool Battle::believed_alive(const Ship& s, const Ship& t, Sys sys) const {
+    // The AI's fire control knows the truth (demo simplification); the player's believes its crew's marks.
+    if (!s.player) return t.alive_sys(sys) && !(sys == Sys::Gun && t.ammo <= 0);
+    if (s.mark[static_cast<int>(sys)] == Mark::Killed) return false;
+    if (sys == Sys::Laser) {
+        for (Mark m : s.turret_mark) if (m != Mark::Killed) return true;
+        return false;
+    }
+    if (sys == Sys::Gun && t.cls.gun == GunKind::None) return false;
+    return true;
+}
+
 // ---------------------------------------------------------------- damage assessment
 
-void Battle::assess(int observer, const Ship& target, const std::string& part, bool destroyed, bool real) {
+void Battle::assess(int observer, const Ship& target, Sys sys, int turret, bool real) {
     // The crew only sees the enemy through the EO track. A real kill is noticed with a chance that grows with track
     // quality (30 % with no track to 90 % with a perfect one), and only after watching for 2-8 s. Damage that killed
     // nothing (a round strike, an armour burn-through, a system burned past half) is sometimes called a kill anyway:
@@ -665,17 +718,23 @@ void Battle::assess(int observer, const Ship& target, const std::string& part, b
     double q = sensor_quality(observer, target.id);
     double p = real ? 0.3 + 0.6 * q : 0.02 + 0.18 * (1.0 - q);
     if (rnd() >= p) return;
-    std::string name = part;
+    bool destroyed = turret >= 0;   // a turret is wrecked; a system is put out of action
+    std::string name = destroyed ? fmt("laser turret %.0f", turret + 1) : sys_name(sys);
     for (auto& ch : name) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     pending_.push_back({time_, time_ + 2.0 + 6.0 * rnd(), observer,
-                        "Enemy " + name + (destroyed ? ": probable destroy" : ": probable disable"), real});
+                        "Enemy " + name + (destroyed ? ": probable destroy" : ": probable disable"), real, sys, turret});
 }
 
 void Battle::release_assessments() {
     for (std::size_t i = 0; i < pending_.size();) {
         if (pending_[i].due <= time_ + 1e-9) {
-            log(pending_[i].observer, "assess", pending_[i].text);
-            reported_.push_back(pending_[i]);
+            const Assessment& a = pending_[i];
+            log(a.observer, "assess", a.text);
+            // When the computer flies the player's ship (balance runs, watch mode) it trusts its crew like a sensible
+            // player: a called kill gets marked killed. A human player makes the marks themselves.
+            Ship& o = ships_[static_cast<std::size_t>(a.observer)];
+            if (o.player && o.ai_controlled) set_mark(o.id, a.sys, a.turret, Mark::Killed);
+            reported_.push_back(a);
             pending_.erase(pending_.begin() + static_cast<std::ptrdiff_t>(i));
         } else ++i;
     }

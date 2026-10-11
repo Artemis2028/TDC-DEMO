@@ -13,6 +13,7 @@ const PRI := Color("#f2a531")
 const PRI_INK := Color("#140c00")
 const SEC := Color("#6cc7e0")
 const HOT := Color("#ff5a36")
+const WARN := Color("#e8c547")     # degraded marks
 const DIM := Color("#1b2731")
 const PAPER := Color("#d9dedd")
 const INK := Color("#1b2731")
@@ -63,7 +64,9 @@ class Btn extends Control:
 	var hazard := false
 	var dashed := false
 	var top := ""          # small key label above the main label (helm caps)
+	var mark := 0          # the crew's mark on a target: 0 none, 1 degraded (amber tag), 2 killed (red X)
 	signal pressed
+	signal right_pressed
 
 	func _init(k: String, t: String, size_px: Vector2, on_press: Callable = Callable()) -> void:
 		kind = k
@@ -85,11 +88,19 @@ class Btn extends Control:
 			sub = s
 			queue_redraw()
 
+	func set_mark(m: int) -> void:
+		if m != mark:
+			mark = m
+			queue_redraw()
+
 	func _gui_input(e: InputEvent) -> void:
 		if locked:
 			return
 		if e is InputEventMouseButton and e.button_index == MOUSE_BUTTON_LEFT and e.pressed:
 			pressed.emit()
+			accept_event()
+		elif e is InputEventMouseButton and e.button_index == MOUSE_BUTTON_RIGHT and e.pressed:
+			right_pressed.emit()
 			accept_event()
 
 	func _draw() -> void:
@@ -135,6 +146,14 @@ class Btn extends Control:
 			W.text_c(self, W.FH, label, Vector2(cx, cy), font_size, fg)
 		if locked:
 			W.draw_x(self, r)
+		if mark == 1:                      # degraded: amber frame and corner tag
+			draw_rect(Rect2(1, 1, r.size.x - 2, r.size.y - 2), WARN, false, 2.0)
+			draw_rect(Rect2(r.size.x - 26, 0, 26, 12), WARN)
+			W.text_c(self, W.FM, "DEG", Vector2(r.size.x - 13, 5.5), 9, BG)
+		elif mark == 2:                    # killed: the crew's red X
+			W.draw_x(self, r)
+			draw_rect(Rect2(r.size.x - 30, 0, 30, 12), HOT)
+			W.text_c(self, W.FM, "KILL", Vector2(r.size.x - 15, 5.5), 9, BG)
 
 ## Section header: coloured title, a rule, and a faint hint on the right.
 class Header extends Control:

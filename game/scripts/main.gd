@@ -145,6 +145,9 @@ func _ready() -> void:
 		if args.has("--preset"): _set_mode(1)
 		if args.has("--broadside"): battle.set_facing(1)
 		if args.has("--roll"): battle.set_roll(1)
+		if args.has("--marks"):            # screenshots: show a degraded and a killed mark
+			battle.set_mark(0, -1, 1)
+			battle.set_mark(3, -1, 2)
 		if args.has("--burn"):
 			throttle = float(args[args.find("--throttle") + 1]) if args.has("--throttle") else 1.0
 			battle.set_burn(int(args[args.find("--burn") + 1]), throttle)
@@ -645,6 +648,7 @@ func _build_left() -> void:
 		var pos := Vector2(x + (i % 3) * (cw3 + 4), y + (i / 3) * 44)
 		var si: int = TARGETS[i][0]
 		var b := _btn("cap", TARGETS[i][2], pos, Vector2(cw3, 40), func(): _pick_target(si))
+		b.right_pressed.connect(func(): _cycle_mark(si))   # right-click: unmarked -> degraded -> killed -> unmarked
 		tgt_btns.append(b)
 	y += 92
 	var cw := (260.0 - 12) / 4
@@ -824,14 +828,33 @@ func _pick_target(si: int) -> void:
 	battle.set_fire_mode(1, si)
 	var next := -1
 	if si == 1 and again:
-		var thp: PackedFloat64Array = battle.get_ship(1)["turret_hp"]
+		var tmk: PackedInt32Array = own["turret_mark"]   # our crew's marks: skip turrets we judge knocked out
 		var cur: int = own["target_turret"]
 		for step in range(1, 5):
 			var cand := (cur + 1 + step) % 4 - 1        # cycles -1, 0, 1, 2
-			if cand < 0 or thp[cand] > 0:
+			if cand < 0 or tmk[cand] != 2:
 				next = cand
 				break
 	battle.set_target_turret(next)
+
+## Right-click on a target button: the crew's mark steps unmarked -> degraded -> killed -> unmarked. On the lasers it
+## marks the turret being shown (after cycling to one), else the laser system as a whole. AUTO fire control skips
+## anything marked killed, right or wrong.
+func _cycle_mark(si: int) -> void:
+	var own: Dictionary = battle.get_ship(0)
+	var tt: int = own["target_turret"] if int(own["target_sys"]) == 1 else -1
+	var cur: int
+	if si == 1 and tt >= 0:
+		cur = (own["turret_mark"] as PackedInt32Array)[tt]
+		battle.set_mark(1, tt, (cur + 1) % 3)
+	elif si == 1:
+		# the laser as a whole: mark all three turrets together
+		var tm: PackedInt32Array = own["turret_mark"]
+		cur = tm[0] if tm[0] == tm[1] and tm[1] == tm[2] else 0
+		for k in 3: battle.set_mark(1, k, (cur + 1) % 3)
+	else:
+		cur = (own["mark"] as PackedInt32Array)[si]
+		battle.set_mark(si, -1, (cur + 1) % 3)
 
 func _toggle_free() -> void:
 	battle.set_weapons_free(not bool(battle.get_ship(0)["weapons_free"]))
@@ -974,15 +997,25 @@ func _update_hud() -> void:
 	var tt: int = own["target_turret"]
 	var fthp: PackedFloat64Array = foe["turret_hp"]
 	var tname: String = SYS_NAMES[ts].to_upper() + ((" %d" % (tt + 1)) if ts == 1 and tt >= 0 else "")
-	var tval := fthp[tt] if ts == 1 and tt >= 0 else fh[ts]
-	tgt_scr.set_text("%s|▸ %s|%s" % [_foe_name().replace("MRS ", ""), tname, ("%d%%" % int(tval)) if known else "??"])
+	# The enemy as our crew sees it: estimates (~, rounded to 10) and our own kill marks, never the truth.
+	var est: PackedFloat64Array = own["est"]
+	var test: PackedFloat64Array = own["turret_est"]
+	var mk: PackedInt32Array = own["mark"]
+	var tmk: PackedInt32Array = own["turret_mark"]
+	var tval := test[tt] if ts == 1 and tt >= 0 else est[ts]
+	tgt_scr.set_text("%s|▸ %s|%s" % [_foe_name().replace("MRS ", ""), tname, ("~%d%%" % int(tval)) if known else "??"])
 	for i in TARGETS.size():
 		var b: W.Btn = tgt_btns[i]
 		var si: int = TARGETS[i][0]
-		var hv: float = fh[si]
-		var v := ("%d" % int(hv)) if known else "??"
+		var hv: float = est[si]
+		var v := ("~%d" % int(hv)) if known else "??"
+		var m: int = mk[si]
+		if si == 1:
+			var all_same := tmk[0] == tmk[1] and tmk[1] == tmk[2]
+			m = tmk[tt] if ts == 1 and tt >= 0 else (tmk[0] if all_same else 0)
 		if si == 1 and ts == 1 and int(own["fire_mode"]) == 1:
-			v = ("ANY" if tt < 0 else "#%d" % (tt + 1)) + ((" · %d" % int(fthp[tt] if tt >= 0 else hv)) if known else "")
+			v = ("ANY" if tt < 0 else "#%d" % (tt + 1)) + ((" · ~%d" % int(test[tt] if tt >= 0 else hv)) if known else "")
+		b.set_mark(m)
 		if preset_mode:
 			b.set_text(TARGETS[i][3], TARGETS[i][2])
 		else:
@@ -1206,10 +1239,13 @@ func _draw_overlay(c: Control) -> void:
 				c.draw_arc(sp, 9, 0, TAU, 20, Color(mc, 0.9), 1.5)
 				c.draw_string(W.FM, sp + Vector2(12, -6), pp[3], HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(mc, 0.9))
 		var tpos: Vector3 = foe_model.turret_position(tt) if ts == 1 and tt >= 0 else foe_model.sys_position(ts)
-		var tval: float = fthp[tt] if ts == 1 and tt >= 0 else fh[ts]
+		var oest: PackedFloat64Array = own["est"]
+		var otest: PackedFloat64Array = own["turret_est"]
+		var omk: PackedInt32Array = own["mark"]
+		var tval: float = otest[tt] if ts == 1 and tt >= 0 else oest[ts]
 		var tlab: String = SYS_NAMES[ts].to_upper() + ((" %d" % (tt + 1)) if ts == 1 and tt >= 0 else "")
 		if not cam.is_position_behind(tpos):
-			_callout(c, cam.unproject_position(tpos), "%s · %s" % [tlab, ("%d%%" % int(tval)) if known else "??"], W.PRI)
+			_callout(c, cam.unproject_position(tpos), "%s · %s" % [tlab, ("~%d%%" % int(tval)) if known else "??"], W.PRI)
 		# resolved components panel
 		var pr := Rect2(40, 80, 210, 30 + 6 * 18)
 		c.draw_rect(pr, W.PANEL)
@@ -1220,9 +1256,11 @@ func _draw_overlay(c: Control) -> void:
 			var res := q > 0.25 + i * 0.05
 			var nm: String = str(SYS_NAMES[i]).to_upper()
 			c.draw_string(W.FM, Vector2(pr.position.x + 10, yy), nm, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, W.TEXT if res else W.FAINT)
-			var v := ("%d%%" % int(fh[i])) if res else "??"
+			var v := ("~%d%%" % int(oest[i])) if res else "??"
+			if omk[i] == 2: v = "KILL " + v
+			elif omk[i] == 1: v = "DEG " + v
 			var vw := W.FM.get_string_size(v, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
-			c.draw_string(W.FM, Vector2(pr.end.x - 10 - vw, yy), v, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, W.hp(fh[i]) if res else W.FAINT)
+			c.draw_string(W.FM, Vector2(pr.end.x - 10 - vw, yy), v, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, W.hp(oest[i]) if res else W.FAINT)
 
 func _callout(c: Control, p: Vector2, label: String, col: Color) -> void:
 	var p2 := p + Vector2(-52, -54)
@@ -1273,7 +1311,7 @@ func _build_menu() -> void:
 	v.add_child(UI.locked("Fleet battles · missiles · EW · sensors", 400))
 	v.add_child(UI.button("Support development on Patreon", _open_patreon, UI.HOT, 400))
 	v.add_child(UI.button("Quit", func(): get_tree().quit(), UI.MUTED, 400))
-	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll left/right (again to stop) · T side-on / nose-on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Esc menu", 12, UI.FAINT)
+	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll left/right (again to stop) · T side-on / nose-on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Right-click a target button to mark it degraded / killed · Esc menu", 12, UI.FAINT)
 	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	keys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	keys.custom_minimum_size.x = 400
@@ -1374,15 +1412,15 @@ func _foe_components() -> Array:
 		if si == 1:
 			# one marker for the lasers, on the picked turret, or the one fire control would hit (faces us), or any live one
 			var foe: Dictionary = battle.get_ship(1)
-			var fthp: PackedFloat64Array = foe["turret_hp"]
+			var tmk: PackedInt32Array = battle.get_ship(0)["turret_mark"]   # our marks, not the truth
 			var want: int = battle.get_ship(0)["target_turret"]
 			if want < 0:
 				var bears: Array = foe["turret_bears"]
 				for k in 3:
-					if fthp[k] > 0 and bears[k]: want = k; break
+					if tmk[k] != 2 and bears[k]: want = k; break
 				if want < 0:
 					for k in 3:
-						if fthp[k] > 0: want = k; break
+						if tmk[k] != 2: want = k; break
 			if want >= 0:
 				pos = foe_model.turret_position(want)
 				lab = "LSR %d" % (want + 1) if int(battle.get_ship(0)["target_turret"]) >= 0 else "LSR"
