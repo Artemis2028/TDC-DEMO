@@ -206,7 +206,7 @@ void Battle::set_target_turret(int ship, int turret) {
 
 bool Battle::turret_bears(int ship, int turret, int target) const {
     // The target lies in the battle plane. Seen from the ship it is ahead or astern by cos(rel) and off to the left or
-    // right; no turret sees it close astern (radiators and drive in the way), every turret sees it close ahead (the
+    // right; no turret sees it dead astern (the drive is in the way), every turret sees it close ahead (the
     // beam clears the bow lengthwise), and otherwise a turret sees it if the side it is on lies within its arc. Rolling the ship turns every turret's outward direction by the roll angle.
     const Ship& s = ships_[ship];
     const Ship& t = ships_[target];

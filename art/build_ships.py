@@ -25,7 +25,7 @@ import bmesh
 from mathutils import Matrix, Vector
 
 TAU = 2 * math.pi
-TURRET_ANGLES = [math.radians(0), math.radians(180), math.radians(90)]     # must match kTurretAngle in the sim
+TURRET_ANGLES = [math.radians(45), math.radians(135), math.radians(315)]     # must match kTurretAngle in the sim
 OMS_FWD, OMS_AFT = 0.10, 0.765                                           # must match ship_model.gd
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "game", "models")
 

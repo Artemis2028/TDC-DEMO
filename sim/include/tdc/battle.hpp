@@ -24,19 +24,18 @@ constexpr int kSys = static_cast<int>(Sys::Count);
 enum class Section : int { Nose, Body, Aft, Count };
 constexpr int kSec = static_cast<int>(Section::Count);
 
-/// Laser turrets: two big housings on the beam near the bow (starboard and port) and one on the back, like the
-/// Dagger concept model. Angles are measured around the ship's axis from its right side toward its top (the 3D model
-/// uses the same angles): starboard 0, port 180, dorsal 90 deg.
+/// Laser turrets: three housings near the bow on the diagonals, halfway between the radiator wings so the wings
+/// never stand in their line of fire: top-right 45, top-left 135 and bottom-right 315 deg, measured around the
+/// ship's axis from its right side toward its top (the 3D models use the same angles). Bottom-left is the coilgun's.
 constexpr int kTurrets = 3;
-constexpr std::array<double, kTurrets> kTurretAngle{0.0, 3.141592653589793, 1.5707963267948966};  // 0, 180, 90 deg
+constexpr std::array<double, kTurrets> kTurretAngle{0.7853981633974483, 2.356194490192345, 5.497787143782138};  // 45, 135, 315 deg
 /// A turret bears on a target off to one side if the target lies within this angle of the turret's own outward
-/// direction (90 deg is the hull's horizon; the raised mount adds some, the radiator panels take some back).
+/// direction (90 deg is the hull's horizon; the raised mount adds some).
 constexpr double kTurretHalfArc = 1.8325957145940461;   // 105 deg
 /// Within this angle of the nose every turret can see past the hull.
 constexpr double kAxialClear = 0.17453292519943295;     // 10 deg
-/// Within this angle of the stern no turret can fire: the radiator panels aft of the turrets stand in the same
-/// planes as the turrets (0, 90, 180 deg), and the drive is in the way.
-constexpr double kAftBlind = 0.4363323129985824;        // 25 deg
+/// Within this angle of the stern no turret can fire: the drive and its plume are in the way.
+constexpr double kAftBlind = 0.17453292519943295;       // 10 deg
 
 enum class GunKind : int { None, Railgun, Coilgun };
 enum class Facing : int { Nose, Broadside, Away };
