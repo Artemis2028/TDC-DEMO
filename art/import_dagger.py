@@ -27,7 +27,10 @@ from mathutils import Matrix, Vector  # noqa: E402
 import build_ships as B  # noqa: E402
 
 SRC = os.path.join(HERE, "source", "Dagger_Earth_Destroyer.blend")
-LENGTH = 180.0               # the concept's overall length; ShipModel uses the same number
+NOSE_LENGTH = 30.0           # new sloped bow, from the crew shell's front (concept x = -83) to the tip
+HOUSING_SCALE = 0.67         # laser housings at two thirds of the concept's size
+LENGTH = 83.0 + NOSE_LENGTH + 89.6   # tip to nozzle exit = 202.6 m; ShipModel uses the same number
+_OLD_LENGTH = 180.0               # the concept's overall length; ShipModel uses the same number
 
 
 def ours(x_concept):
@@ -97,6 +100,23 @@ def main(save_blend):
             reparent_keep(ob, piv)
         ri += 1
 
+    # --- a longer, sloped bow: a faceted ogive of armour plates in place of the concept's short blunt bow
+    for name in ("Armored tapered bow", "Rounded armored bow cap"):
+        bpy.data.objects.remove(bpy.data.objects[name], do_unlink=True)
+    m_bow = bpy.data.materials["Pale aerospace protective panels"]
+    base, R, Lb = ours(-83.0), 7.0, NOSE_LENGTH
+    rho = (R * R + Lb * Lb) / (2 * R)                   # tangent ogive: the sides meet the hull with no kink
+    prof = []
+    for i in range(25):
+        x = Lb * i / 24                                  # distance from the tip
+        r = math.sqrt(rho * rho - (Lb - x) ** 2) + R - rho
+        prof.append((base + Lb - x, max(r, 0.0)))
+    prof[0] = (prof[0][0], 0.0)
+    bow = B.revolve("N_bow", prof, m_bow, seg=16)       # 16 flat plates around: sloped armour
+    for poly in bow.data.polygons:
+        poly.use_smooth = False
+    B.revolve("N_bow_seam", [(base + 0.15, R * 1.004), (base - 0.15, R * 1.004)], bpy.data.materials["Shadow-shield casing"], seg=96)
+
     # --- the game's parts, in game axes (nose +Y, +X right, +Z top)
     m_gun = B.material("B_gun", (0.60, 0.53, 0.40), 0.35, 0.7)
 
@@ -109,6 +129,16 @@ def main(save_blend):
 
     star_root, star = assembly("Starboard beam director | gimbal assembly")
     port_root, port = assembly("Port beam director | gimbal assembly")
+    # smaller housings: two thirds of the concept's size, shrunk toward the point where each meets the hull
+    for root_ob, parts in ((star_root, star), (port_root, port)):
+        c = root_ob.matrix_world.translation.copy()
+        out = Vector((c.x, 0, c.z)).normalized()
+        hinge = Vector((0, c.y, 0)) + out * 7.0
+        shrink = Matrix.Translation(hinge) @ Matrix.Scale(HOUSING_SCALE, 4) @ Matrix.Translation(-hinge)
+        worlds = [shrink @ o.matrix_world for o in parts]
+        for o, mw in zip(parts, worlds):
+            o.matrix_world = mw
+            bpy.context.view_layer.update()
     turn = Matrix.Rotation(-math.pi / 2, 4, "Y")       # +X (starboard) to +Z (top), about the ship's axis
     dors = []
     for ob in star:
@@ -138,7 +168,7 @@ def main(save_blend):
                     ob.name = f"B_dome{k}"
                 elif "optical aperture" in ob.name:
                     ob.name = f"Lens{k}"
-        muz = new_empty(f"Muzzle{k}", Matrix.Translation(centre + out * 5.3))
+        muz = new_empty(f"Muzzle{k}", Matrix.Translation(centre + out * 5.3 * HOUSING_SCALE))
         reparent_keep(muz, piv)
 
     # OMS: the concept's eight half-ball pods, one gimballed bell each. Name each bell exit for the game's jets;
@@ -168,8 +198,8 @@ def main(save_blend):
     B.empty("Gun_Rail", (0, 0, 0))     # the Earth hull carries no railgun; the node keeps the game's lookup simple
 
     # reference points: Drive, Laser, Gun, Sensors, Radiators, Crew; and the drive exit
-    for i, p in enumerate([(0, ours(70), 0), (0, ours(-65), 13.0), gout * gr + Vector((0, ours(-25), 0)),
-                           (0, ours(-89), 0), (0, ours(25), 40.0), (0, ours(-73), 0)]):
+    for i, p in enumerate([(0, ours(70), 0), (0, ours(-65), 7.0 + 6.0 * HOUSING_SCALE), gout * gr + Vector((0, ours(-25), 0)),
+                           (0, ours(-83) + NOSE_LENGTH * 0.8, 0), (0, ours(25), 40.0), (0, ours(-73), 0)]):
         B.empty(f"Sys{i}", p)
     B.empty("Nozzle", (0, ours(89.6), 0))
     bpy.context.view_layer.update()
