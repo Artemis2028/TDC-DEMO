@@ -18,6 +18,7 @@ int64_t DemoBattle::get_winner() const { return b_->winner(); }
 bool DemoBattle::get_cruise_allowed() const { return b_->cruise_allowed(); }
 
 void DemoBattle::set_weapons_free(bool f) { b_->set_weapons_free(0, f); }
+void DemoBattle::set_armed(bool laser, bool on) { b_->set_armed(0, laser, on); }
 void DemoBattle::set_fire_mode(int64_t m, int64_t t) { b_->set_fire_mode(0, static_cast<tdc::FireMode>(m), static_cast<tdc::Sys>(t)); }
 void DemoBattle::set_facing(int64_t f) { b_->set_facing(0, static_cast<tdc::Facing>(f)); }
 void DemoBattle::set_burn(int64_t burn, double th) { b_->set_burn(0, static_cast<tdc::Burn>(burn), th); }
@@ -51,7 +52,9 @@ Dictionary DemoBattle::get_ship(int64_t i) const {
     d["laser_firing"] = s.laser_firing;
     d["burning"] = s.burn != tdc::Burn::Off && s.alive_sys(tdc::Sys::Drive);
     d["out"] = s.out; d["out_reason"] = String::utf8(s.out_reason.c_str());
-    d["weapons_free"] = s.weapons_free; d["fire_mode"] = static_cast<int>(s.fire_mode); d["target_sys"] = static_cast<int>(s.target_sys);
+    d["weapons_free"] = s.weapons_free; d["laser_armed"] = s.laser_armed; d["gun_armed"] = s.gun_armed;
+    d["dv_left"] = s.dv_left; d["dv_max"] = s.cls.delta_v; d["overheated"] = s.overheated;
+    d["laser_dps"] = s.cls.laser_dps; d["gun_damage"] = s.cls.gun_damage; d["fire_mode"] = static_cast<int>(s.fire_mode); d["target_sys"] = static_cast<int>(s.target_sys);
     d["facing"] = static_cast<int>(s.facing); d["burn"] = static_cast<int>(s.burn); d["throttle"] = s.throttle;
     d["auto_repair"] = s.auto_repair; d["teams"] = s.repair_teams();
     Array reps;
@@ -100,6 +103,7 @@ void DemoBattle::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_winner"), &DemoBattle::get_winner);
     ClassDB::bind_method(D_METHOD("get_cruise_allowed"), &DemoBattle::get_cruise_allowed);
     ClassDB::bind_method(D_METHOD("set_weapons_free", "free"), &DemoBattle::set_weapons_free);
+    ClassDB::bind_method(D_METHOD("set_armed", "laser", "on"), &DemoBattle::set_armed);
     ClassDB::bind_method(D_METHOD("set_fire_mode", "mode", "target_sys"), &DemoBattle::set_fire_mode);
     ClassDB::bind_method(D_METHOD("set_facing", "facing"), &DemoBattle::set_facing);
     ClassDB::bind_method(D_METHOD("set_burn", "burn", "throttle"), &DemoBattle::set_burn);

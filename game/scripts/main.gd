@@ -1,77 +1,106 @@
 extends Node3D
-## TDC demo: one battle at the Moon. All rules run in the compiled DemoBattle; this script only draws and sends orders.
+## TDC demo: one battle above Mars. All rules run in the compiled DemoBattle; this script only draws and sends orders.
+## The HUD follows the CIC flight-deck layout. Features that are not in the demo are drawn with a red X and do nothing.
 
 const PATREON_URL := ""   # set before release
-const SPEED_NAMES := ["PAUSE", "0.5×", "1×", "2×", "5×", "10×", "CRUISE"]
+const SPEED_NAMES := ["II", "½×", "1×", "2×", "5×", "10×", "CRZ"]
 const SYS_NAMES := ["Drive", "Laser", "Gun", "Sensors", "Radiators", "Crew"]
-const PRESETS := [["Disable drive", 0], ["Blind", 3], ["Cook", 4], ["Disarm", 1]]
-const MOON_R := 1737.4e3
+const SYS_ABBR := ["DRV", "LSR", "GUN", "SNS", "RAD", "CRW"]
+const PRESET_VERB := ["Disable", "Disarm", "Silence", "Blind", "Cook", "Kill"]
+const MARS_R := 3389.5e3
+const ALT := 650e3          # display orbit height, chosen so the planet's limb shows as an arc
+const VP := Rect2(312, 72, 804, 684)
 
 var battle: DemoBattle
 var ship_class := 0
 var state := "menu"
 var ev_index := 0
-var log_lines: Array[String] = []
+var log_lines: Array = []   # [text, clock]
 
 # 3D
+var view_vp: SubViewport
 var cam: Camera3D
 var own_model: ShipModel
 var foe_model: ShipModel
-var moon: MeshInstance3D
+var planet: MeshInstance3D
 var lines: ImmediateMesh
 var line_mat: StandardMaterial3D
-var foe_marker: Label3D
-var yaw := 0.6
-var pitch := 0.25
-var dist := 300.0
+var yaw := 0.9
+var pitch := 0.42
+var dist := 320.0
 var dragging := false
-var view_target := false   # false: own ship, true: the enemy as your EO sees it
+var view_target := false
 var chase := false
+var armor_view := false
 var roll_angle := 0.0
 var foe_roll := 0.0
 
-# EO sensor window
+# EO sensor
 var eo_vp: SubViewport
 var eo_cam: Camera3D
-var eo_rect: TextureRect
-var eo_info: Label
 
-# HUD widgets
+# player-side UI state
+var sel_burn := 1           # burn direction picked on the helm (1 close, 2 open, 3 left, 4 right, 5 match)
+var preset_mode := false
+var throttle := 1.0
+var last_heat := 0.0
+var last_time := 0.0
+var heat_rate := 0.0
+var dc_line_sys: Array = []
+
+# HUD
 var hud: Control
 var menu: Control
 var end_screen: Control
-var nameplate: Label
-var nameplate_sub: Label
-var hull_segs: Array[ColorRect] = []
-var clock_lbl: Label
-var speed_btns: Array[Button] = []
-var drop_lbl: Label
-var free_btn: Button
-var arm_rows := {}
-var mode_btns: Array[Button] = []
-var target_btns: Array[Button] = []
-var preset_btns: Array[Button] = []
-var burn_btns: Array[Button] = []
-var facing_btns: Array[Button] = []
-var throttle: HSlider
-var heat_bar: ProgressBar
-var heat_lbl: Label
-var rad_btn: Button
-var sys_rows: Array = []
-var teams_lbl: Label
-var auto_rep_btn: Button
-var log_lbl: Label
-var vp_title: Label
-var vp_sub: Label
-var view_btns: Array[Button] = []
-var armor_view := false
+var overlay: Control
+var nameplate: Control
+var ship_tab: W.Btn
+var cond_badge: Control
+var clock_scr: W.Screen
+var speed_btns: Array = []
+var drop_txt: W.Txt
+var arm_rows: Array = []    # [arm btn, flag, name txt, sub txt, counter screen]
+var mode_btns: Array = []
+var guard: W.Guard
+var free_txt: W.Txt
+var free_sub: W.Txt
+var tgt_hdr: W.Header
+var tgt_scr: W.Screen
+var tgt_btns: Array = []
+var helm_btns: Array = []
+var drive_txt: W.Txt
+var thr_txt: W.Txt
+var thr_segs: W.Segs
+var ignite: W.Btn
+var dv_scr: Array = []
+var fuel_txt: W.Txt
+var ball: W.Ball
+var att_scr: W.Screen
+var rwr_txt: W.Txt
+var view_btns: Array = []
+var lamps: Array = []
+var heat_rate_txt: W.Txt
+var ring: W.Ring
+var heat_lines: Array = []
+var rad_txt: W.Txt
+var rad_btns: Array = []
+var dc_hdr: W.Header
+var auto_btn: W.Btn
+var paper: W.Paper
+var eo_label_t1 := ""
+var eo_label_t2 := ""
+var scope_over: Control
+var scope_foot_l: W.Txt
+var scope_foot_r: W.Txt
 
-# capture mode: --shot path --at seconds [--class n] [--target] [--armor] [--menu]
+# capture mode: --shot path --at seconds [--class n] [--target] [--armor] [--menu] [--hold] [--preset]
 var shot_path := ""
 var shot_at := 0.0
 var shot_frames := 0
+var shot_clicks: Array = []   # --click x,y (repeatable): synthetic clicks for checking the HUD wiring headless
 
 func _ready() -> void:
+	RenderingServer.set_default_clear_color(W.BG)
 	_build_world()
 	_build_hud()
 	_build_menu()
@@ -84,14 +113,18 @@ func _ready() -> void:
 			"--class": ship_class = int(args[i + 1])
 			"--target": view_target = true
 			"--armor": armor_view = true
+			"--click":
+				var xy: PackedStringArray = args[i + 1].split(",")
+				shot_clicks.append(Vector2(float(xy[0]), float(xy[1])))
 	if shot_path != "" and not args.has("--menu"):
-		_start(ship_class, true)
+		_start(ship_class)
+		if args.has("--hold"): battle.set_weapons_free(false)
+		if args.has("--preset"): _set_mode(1)
 		while battle.get_time() < shot_at and battle.get_winner() < 0:
 			battle.advance(1.0)
+			_track_heat()
 		battle.set_speed(0)
 		_drain_events()
-	elif shot_path == "":
-		_show_menu()
 	else:
 		_show_menu()
 
@@ -99,39 +132,31 @@ func _ready() -> void:
 
 func _build_world() -> void:
 	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.008, 0.012, 0.02)
+	env.background_mode = Environment.BG_CLEAR_COLOR
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.3, 0.33, 0.4)
 	env.ambient_light_energy = 0.5
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	env.glow_enabled = true
-	env.glow_intensity = 1.0
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
 	var sun := DirectionalLight3D.new()
-	sun.light_energy = 1.7
-	sun.light_color = Color(1, 0.97, 0.92)
+	sun.light_energy = 1.8
+	sun.light_color = Color(1, 0.95, 0.88)
 	add_child(sun)
-	sun.look_at_from_position(Vector3.ZERO, Vector3(-1, -0.5, -0.4), Vector3.UP)
-	cam = Camera3D.new()
-	cam.fov = 50
-	cam.near = 1.0
-	cam.far = 5.0e6
-	add_child(cam)
-	moon = MeshInstance3D.new()
+	sun.look_at_from_position(Vector3.ZERO, Vector3(-0.8, -0.25, 0.6), Vector3.UP)
+	planet = MeshInstance3D.new()
 	var sm := SphereMesh.new()
-	sm.radius = MOON_R
-	sm.height = MOON_R * 2
-	sm.radial_segments = 128
-	sm.rings = 64
-	moon.mesh = sm
+	sm.radius = MARS_R
+	sm.height = MARS_R * 2
+	sm.radial_segments = 192
+	sm.rings = 96
+	planet.mesh = sm
 	var mm := StandardMaterial3D.new()
-	mm.albedo_color = Color(0.2, 0.19, 0.18)
+	mm.albedo_color = Color(0.46, 0.2, 0.09)
 	mm.roughness = 1.0
-	moon.material_override = mm
-	add_child(moon)
+	planet.material_override = mm
+	add_child(planet)
 	lines = ImmediateMesh.new()
 	line_mat = StandardMaterial3D.new()
 	line_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -142,25 +167,15 @@ func _build_world() -> void:
 	li.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	li.layers = 2          # beams and round streaks are HUD overlays, not something the EO camera sees
 	add_child(li)
-	foe_marker = Label3D.new()
-	foe_marker.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	foe_marker.fixed_size = true
-	foe_marker.pixel_size = 0.0011
-	foe_marker.font_size = 30
-	foe_marker.outline_size = 6
-	foe_marker.no_depth_test = true
-	foe_marker.modulate = UI.HOT
-	foe_marker.layers = 2          # HUD-only: the EO camera must not see it
-	add_child(foe_marker)
 	# EO sensor: a camera of its own, rendered small and blown up, so poor quality shows as big pixels.
 	eo_vp = SubViewport.new()
 	eo_vp.size = Vector2i(64, 64)
 	eo_vp.world_3d = get_world_3d()
 	eo_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	eo_cam = Camera3D.new()
-	eo_cam.fov = 2.0
+	eo_cam.fov = 4.0
 	eo_cam.near = 10.0
-	eo_cam.far = 5.0e6
+	eo_cam.far = 9.0e6
 	eo_cam.cull_mask = 1
 	eo_vp.add_child(eo_cam)
 	add_child(eo_vp)
@@ -179,13 +194,19 @@ func _spawn_models() -> void:
 
 # ------------------------------------------------------------------ battle flow
 
-func _start(cls: int, quiet := false) -> void:
+func _start(cls: int) -> void:
 	ship_class = cls
 	battle = DemoBattle.new()
 	battle.start(int(Time.get_unix_time_from_system()) if shot_path == "" else 7, cls)
 	battle.set_speed(2)
 	ev_index = 0
 	log_lines.clear()
+	preset_mode = false
+	sel_burn = 1
+	throttle = 1.0
+	last_heat = 0.0
+	last_time = 0.0
+	heat_rate = 0.0
 	_spawn_models()
 	state = "battle"
 	menu.visible = false
@@ -194,25 +215,43 @@ func _start(cls: int, quiet := false) -> void:
 
 func _drain_events() -> void:
 	for e in battle.get_events(ev_index):
-		if e["kind"] == "fire":
+		if not ["hit", "burn-through", "disabled", "overheat", "out"].has(str(e["kind"])):
 			continue
-		var t: float = e["time"]
-		log_lines.append("%s  %s" % [_clock(t), e["text"]])
+		log_lines.append([str(e["text"]), _clock(float(e["time"]))])
 	ev_index = battle.event_count()
-	while log_lines.size() > 5:
+	while log_lines.size() > 6:
 		log_lines.pop_front()
+
+func _track_heat() -> void:
+	var t: float = battle.get_time()
+	if t - last_time >= 1.0:
+		var h: float = battle.get_ship(0)["heat"]
+		heat_rate = lerpf(heat_rate, (h - last_heat) / (t - last_time), 0.5)
+		last_heat = h
+		last_time = t
 
 func _process(delta: float) -> void:
 	if state == "battle" and battle:
 		battle.advance(delta)
 		_drain_events()
+		_track_heat()
 		if battle.get_winner() >= 0 and not end_screen.visible:
 			_show_end()
 	if battle:
 		_update_world(delta)
-		_update_hud()
+		if hud.visible:
+			_update_hud()
 	if shot_path != "":
 		shot_frames += 1
+		if shot_frames == 10:
+			for p in shot_clicks:
+				for down in [true, false]:
+					var ev := InputEventMouseButton.new()
+					ev.button_index = MOUSE_BUTTON_LEFT
+					ev.pressed = down
+					ev.position = p
+					ev.global_position = p
+					Input.parse_input_event(ev)
 		if shot_frames == 40:
 			var img := get_viewport().get_texture().get_image()
 			img.save_png(shot_path)
@@ -229,31 +268,26 @@ func _update_world(delta: float) -> void:
 	var focus: Vector2 = foe["pos"] if view_target else own["pos"]
 	own_model.position = _sim_to_world(own["pos"], focus)
 	foe_model.position = _sim_to_world(foe["pos"], focus)
-	if int(own["facing"]) == 1: roll_angle += delta * 0.6 * battle_speed()
-	if int(foe["facing"]) == 1: foe_roll += delta * 0.6 * battle_speed()
+	if int(own["facing"]) == 1: roll_angle = wrapf(roll_angle + delta * 0.6 * battle_speed(), -PI, PI)
+	if int(foe["facing"]) == 1: foe_roll = wrapf(foe_roll + delta * 0.6 * battle_speed(), -PI, PI)
 	own_model.rotation = Vector3(0, float(own["heading"]) - PI / 2, roll_angle)
 	foe_model.rotation = Vector3(0, float(foe["heading"]) - PI / 2, foe_roll)
 	own_model.view_mode = 1 if armor_view else 0
 	foe_model.view_mode = 1 if armor_view and view_target and battle.get_sensor_quality() > 0.5 else 0
 	own_model.show_state(own, delta)
 	foe_model.show_state(foe, delta)
-	# The Moon sits below the battle (100 km orbit).
-	moon.position = Vector3(0, -(MOON_R + 100e3), 0)
-	# Camera.
+	planet.position = Vector3(0, -(MARS_R + ALT), 0)
+	# Camera: orbit (or chase) the ship in view; the view is rolled a little so the planet's limb runs across the lower left.
 	var target_node: Node3D = foe_model if view_target else own_model
-	var up := Vector3.UP
 	var off: Vector3
 	if chase and not view_target:
 		var back := own_model.global_transform.basis.z.normalized()
-		off = back * dist * 0.9 + up * dist * 0.25
+		off = back * dist * 0.9 + Vector3.UP * dist * 0.25
 	else:
 		off = Vector3(cos(pitch) * sin(yaw), sin(pitch), cos(pitch) * cos(yaw)) * dist
 	cam.position = target_node.position + off
-	cam.look_at(target_node.position, up)
-	# Enemy marker when looking at our own ship.
-	foe_marker.visible = not view_target
-	foe_marker.position = foe_model.position
-	foe_marker.text = "◆ %s · %.1f km" % [str(foe["name"]).to_upper(), battle.get_range_km()]
+	var fwd := (target_node.position - cam.position).normalized()
+	cam.look_at(target_node.position, Vector3.UP.rotated(fwd, -0.38))
 	# Beams and rounds.
 	lines.clear_surfaces()
 	lines.surface_begin(Mesh.PRIMITIVE_LINES, line_mat)
@@ -268,17 +302,14 @@ func _update_world(delta: float) -> void:
 		_seg(p - dir * 400.0, p, Color(1.6, 1.3, 0.6, 1)); any = true
 	lines.surface_end()
 	if not any: lines.clear_surfaces()
-	# EO camera: from our ship toward the enemy, field of view just wider than the enemy.
+	# EO camera: a long lens is a camera placed close along the same line of sight, framed by the target's apparent size.
 	var q: float = battle.get_sensor_quality()
 	var res := int(clamp(12 + 180 * q * q, 12, 192))
 	eo_vp.size = Vector2i(res, res)
-	# A long lens is a camera placed close along the same line of sight: same picture, no tiny field of view.
-	# Frame the target by its apparent size: a ship seen nose-on is only its width across.
 	var los := (foe_model.position - own_model.position).normalized()
 	var axis := -foe_model.global_transform.basis.z.normalized()
 	var across: float = foe_model.length * sqrt(max(0.0, 1.0 - pow(los.dot(axis), 2))) + foe_model.length * 0.25
 	var half: float = max(12.0, across * 0.65)
-	eo_cam.fov = 4.0
 	eo_cam.position = foe_model.position - los * (half / tan(deg_to_rad(2.0)))
 	eo_cam.look_at(foe_model.position, Vector3.UP)
 
@@ -294,7 +325,36 @@ func battle_speed() -> float:
 static func _clock(t: float) -> String:
 	return "%02d:%02d" % [int(t) / 60, int(t) % 60]
 
-# ------------------------------------------------------------------ HUD
+static func _sd(n: float) -> float:
+	var x := sin(n * 12.9898 + 78.233) * 43758.5453
+	return x - floor(x)
+
+# ------------------------------------------------------------------ HUD build
+
+func _add(c: Control, pos: Vector2, parent: Control = null) -> Control:
+	c.position = pos
+	(parent if parent else hud).add_child(c)
+	return c
+
+func _btn(kind: String, text: String, pos: Vector2, sz: Vector2, cb: Callable = Callable(), parent: Control = null) -> W.Btn:
+	var b := W.Btn.new(kind, text, sz, cb)
+	_add(b, pos, parent)
+	return b
+
+func _locked(kind: String, text: String, pos: Vector2, sz: Vector2, parent: Control = null) -> W.Btn:
+	var b := _btn(kind, text, pos, sz, Callable(), parent)
+	b.locked = true
+	b.tooltip_text = "Not in the demo. Support development on Patreon to unlock it sooner."
+	b.mouse_filter = Control.MOUSE_FILTER_PASS
+	return b
+
+func _painter(rect: Rect2, fn: Callable, parent: Control = null) -> Control:
+	var c := Control.new()
+	c.size = rect.size
+	c.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	c.draw.connect(fn.bind(c))
+	_add(c, rect.position, parent)
+	return c
 
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
@@ -303,365 +363,670 @@ func _build_hud() -> void:
 	hud.set_anchors_preset(Control.PRESET_FULL_RECT)
 	hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(hud)
-
-	# Frame around the centre view.
-	var frame := Control.new()
-	frame.position = Vector2(312, 72)
-	frame.size = Vector2(804, 684)
-	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	frame.draw.connect(func():
-		var pts := PackedVector2Array([Vector2(22, 0), Vector2(804, 0), Vector2(804, 662), Vector2(782, 684), Vector2(0, 684), Vector2(0, 22), Vector2(22, 0)])
-		frame.draw_polyline(pts, UI.LINE, 1.5)
-		frame.draw_line(Vector2(22, 1), Vector2(120, 1), UI.PRI, 3)
-		frame.draw_line(Vector2(1, 22), Vector2(1, 120), UI.PRI, 3)
-		frame.draw_line(Vector2(803, 562), Vector2(803, 662), UI.PRI, 3))
-	hud.add_child(frame)
-	vp_title = UI.label("OWN SHIP", 16, UI.TEXT, true)
-	vp_title.position = Vector2(352, 92)
-	hud.add_child(vp_title)
-	vp_sub = UI.label("", 11, UI.MUTED)
-	vp_sub.position = Vector2(352, 114)
-	hud.add_child(vp_sub)
-	var vrow := HBoxContainer.new()
-	vrow.position = Vector2(700, 86)
-	vrow.add_theme_constant_override("separation", 2)
-	for t in [["Own ship", func(): view_target = false], ["Target", func(): view_target = true], ["Real", func(): armor_view = false], ["Armor", func(): armor_view = true], ["Chase cam", func(): chase = not chase]]:
-		var b := UI.button(t[0], t[1], UI.SEC, 60)
-		b.custom_minimum_size.y = 28
-		vrow.add_child(b)
-		view_btns.append(b)
-	hud.add_child(vrow)
-
-	# Top left: game mark and ship tab.
-	var tl := HBoxContainer.new()
-	tl.position = Vector2(16, 12)
-	tl.add_theme_constant_override("separation", 10)
-	var mark := UI.label("TDC", 22, UI.PRI)
-	tl.add_child(mark)
-	var tab := UI.button("1  YOUR SHIP", Callable(), UI.PRI, 140)
-	UI.set_active(tab, true)
-	tl.add_child(tab)
-	tl.add_child(UI.locked("2  FLEET", 90))
-	hud.add_child(tl)
-
-	# Top centre: nameplate and hull bar.
-	var np := VBoxContainer.new()
-	np.position = Vector2(504, 6)
-	np.size = Vector2(420, 60)
-	np.alignment = BoxContainer.ALIGNMENT_CENTER
-	np.add_theme_constant_override("separation", 1)
-	nameplate = UI.label("", 24, UI.TEXT, true)
-	nameplate.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	np.add_child(nameplate)
-	nameplate_sub = UI.label("", 11, UI.MUTED)
-	nameplate_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	np.add_child(nameplate_sub)
-	var segs := HBoxContainer.new()
-	segs.alignment = BoxContainer.ALIGNMENT_CENTER
-	segs.add_theme_constant_override("separation", 2)
-	for i in 24:
-		var r := ColorRect.new()
-		r.custom_minimum_size = Vector2(9, 5)
-		segs.add_child(r)
-		hull_segs.append(r)
-	np.add_child(segs)
-	hud.add_child(np)
-
-	# Top right: time and speed.
-	var tr := VBoxContainer.new()
-	tr.position = Vector2(1000, 8)
-	tr.size = Vector2(424, 60)
-	tr.alignment = BoxContainer.ALIGNMENT_END
-	clock_lbl = UI.label("", 20, UI.PRI)
-	clock_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	tr.add_child(clock_lbl)
-	var sp := HBoxContainer.new()
-	sp.alignment = BoxContainer.ALIGNMENT_END
-	sp.add_theme_constant_override("separation", 2)
-	for i in SPEED_NAMES.size():
-		var idx := i
-		var b := UI.button(SPEED_NAMES[i], func(): battle.set_speed(idx), UI.SEC, 44)
-		b.custom_minimum_size.y = 26
-		sp.add_child(b)
-		speed_btns.append(b)
-	tr.add_child(sp)
-	hud.add_child(tr)
-	drop_lbl = UI.label("", 12, UI.PRI)
-	drop_lbl.position = Vector2(1128, 66)
-	drop_lbl.size = Vector2(296, 16)
-	drop_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	hud.add_child(drop_lbl)
-
+	_build_viewport()
+	_build_top()
 	_build_left()
 	_build_right()
 	_build_bottom()
 
+func _build_viewport() -> void:
+	# Star field behind the 3D view, then the 3D view (transparent background), then the drawn overlay.
+	_painter(VP, func(c: Control):
+		c.draw_rect(Rect2(Vector2.ZERO, VP.size), Color("#020407"))
+		for i in 130:
+			var p := Vector2(_sd(i) * VP.size.x, _sd(i + 500) * VP.size.y)
+			c.draw_circle(p, 0.4 + _sd(i + 900), Color(0.9, 0.93, 1.0, 0.2 + _sd(i + 1300) * 0.6)))
+	var box := SubViewportContainer.new()
+	box.position = VP.position
+	box.size = VP.size
+	box.stretch = true
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hud.add_child(box)
+	view_vp = SubViewport.new()
+	view_vp.size = Vector2i(VP.size)
+	view_vp.transparent_bg = true
+	view_vp.world_3d = get_world_3d()
+	view_vp.msaa_3d = Viewport.MSAA_4X
+	box.add_child(view_vp)
+	cam = Camera3D.new()
+	cam.fov = 46
+	cam.near = 2.0
+	cam.far = 6.0e6
+	view_vp.add_child(cam)
+	overlay = _painter(VP, _draw_overlay)
+	# time compression, top right of the view
+	var x := VP.end.x - 18 - SPEED_NAMES.size() * 44
+	_add(W.Txt.new("TIME", 10, W.FAINT, true, 40), Vector2(x - 42, VP.position.y + 22))
+	for i in SPEED_NAMES.size():
+		var idx := i
+		speed_btns.append(_btn("tab", SPEED_NAMES[i], Vector2(x + i * 44, VP.position.y + 16), Vector2(42, 26), func(): battle.set_speed(idx)))
+	drop_txt = W.Txt.new("", 10, W.PRI, true, 330)
+	drop_txt.align = HORIZONTAL_ALIGNMENT_RIGHT
+	_add(drop_txt, Vector2(VP.end.x - 18 - 330, VP.position.y + 48))
+
+func _build_top() -> void:
+	# ship tabs
+	var names := [str(_own_name()), "Tarrant", "Meridian"]
+	for i in 3:
+		var w := 132.0
+		var b: W.Btn
+		if i == 0:
+			b = _btn("tab", names[0], Vector2(16 + i * (w + 2), 14), Vector2(w, 32))
+			b.active = true
+			ship_tab = b
+		else:
+			b = _locked("tab", names[i], Vector2(16 + i * (w + 2), 14), Vector2(w, 32))
+		b.key = str(i + 1)
+		b.font_size = 14
+	# nameplate
+	nameplate = _painter(Rect2(504, 0, 420, 62), func(c: Control):
+		c.draw_colored_polygon(PackedVector2Array([Vector2(0.5, 0.5), Vector2(419.5, 0.5), Vector2(391.5, 61.5), Vector2(28.5, 61.5)]), W.PANEL)
+		c.draw_polyline(PackedVector2Array([Vector2(0.5, 0.5), Vector2(419.5, 0.5), Vector2(391.5, 61.5), Vector2(28.5, 61.5), Vector2(0.5, 0.5)]), W.LINE, 1.0)
+		c.draw_line(Vector2(150, 61), Vector2(270, 61), W.PRI, 3)
+		if battle == null: return
+		var own: Dictionary = battle.get_ship(0)
+		W.text_c(c, W.FH, _own_name().to_upper(), Vector2(210, 15), 24, W.TEXT)
+		var hullf: float = own["hull"]
+		W.text_c(c, W.FM, "%s · HULL %d%%" % [_own_class(), int(hullf * 100)], Vector2(210, 35), 11, W.MUTED)
+		for k in 24:
+			c.draw_rect(Rect2(210 - 24 * 11 * 0.5 + k * 11, 46, 9, 5), W.hp(hullf * 100) if float(k) / 24.0 < hullf else W.DIM))
+	# condition badge and mission clock
+	cond_badge = _painter(Rect2(1128, 12, 160, 30), func(c: Control):
+		if battle == null: return
+		var hot := not bool(battle.get_cruise_allowed())
+		var col := W.HOT if hot else W.PRI
+		var t := "CONDITION 1" if hot else "CONDITION 2"
+		var tw := W.FH.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x + 22
+		var r := Rect2(160 - tw, 2, tw, 26)
+		W.stripes(c, r, col, W.BG, 7)
+		c.draw_rect(Rect2(r.position + Vector2(3, 3), r.size - Vector2(6, 6)), W.BG)
+		W.text_c(c, W.FH, t, r.get_center(), 14, col))
+	_add(W.Txt.new("MISSION ELAPSED", 9, W.FAINT, true, 120), Vector2(1310, 6))
+	clock_scr = W.Screen.new("", Vector2(124, 28), W.PRI, 19)
+	_add(clock_scr, Vector2(1300, 18))
+
 func _build_left() -> void:
-	var p := UI.panel(Rect2(16, 72, 288, 812))
-	hud.add_child(p)
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 9)
-	p.add_child(v)
-
-	v.add_child(UI.header("Armament"))
-	for key in ["laser", "gun"]:
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 8)
-		var dot := ColorRect.new()
-		dot.custom_minimum_size = Vector2(12, 12)
-		dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		row.add_child(dot)
-		var col := VBoxContainer.new()
-		col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		col.add_theme_constant_override("separation", 0)
-		var n := UI.label("", 14, UI.TEXT, true)
-		var s := UI.label("", 10, UI.MUTED)
-		col.add_child(n)
-		col.add_child(s)
-		row.add_child(col)
-		var c := UI.label("", 16, UI.SEC)
-		row.add_child(c)
-		v.add_child(row)
-		arm_rows[key] = [dot, n, s, c]
-
-	v.add_child(UI.header("Fire control"))
-	free_btn = UI.button("Weapons free", func(): battle.set_weapons_free(not bool(battle.get_ship(0)["weapons_free"])), UI.HOT)
-	free_btn.custom_minimum_size.y = 40
-	v.add_child(free_btn)
-	var modes := HBoxContainer.new()
-	modes.add_theme_constant_override("separation", 2)
-	for m in [["Auto", 0], ["Manual", 1]]:
-		var mi: int = m[1]
-		var b := UI.button(m[0], func(): battle.set_fire_mode(mi, int(battle.get_ship(0)["target_sys"])), UI.PRI)
-		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		modes.add_child(b)
+	_add(W.Frame.new(Rect2(16, 72, 288, 812), [0, 20, 0, 20], W.PRI, Vector2(0, 90)), Vector2(16, 72))
+	var x := 30.0
+	var y := 84.0
+	# page tabs
+	var t1 := _btn("tab", "Weapons", Vector2(x, y), Vector2(128, 32))
+	t1.key = "1"; t1.active = true; t1.font_size = 14
+	var t2 := _locked("tab", "EW", Vector2(x + 130, y), Vector2(128, 32))
+	t2.key = "2"; t2.font_size = 14
+	y += 44
+	# armament
+	_add(W.Header.new("Armament", W.PRI, "CB · FLAG · CTR", 260), Vector2(x, y))
+	y += 31
+	for i in 4:
+		var row_y := y + i * 45
+		var arm := _btn("cap", "ARM", Vector2(x, row_y + 3), Vector2(44, 32))
+		var flag := W.Flag.new()
+		_add(flag, Vector2(x + 52, row_y + 9))
+		var n := W.Txt.new("", 15, W.TEXT, false, 130)
+		_add(n, Vector2(x + 80, row_y + 2))
+		var s := W.Txt.new("", 10, W.MUTED, true, 130)
+		_add(s, Vector2(x + 80, row_y + 22))
+		var c := W.Screen.new("--", Vector2(46, 24), W.PRI, 16)
+		_add(c, Vector2(x + 214, row_y + 7))
+		arm_rows.append([arm, flag, n, s, c])
+	(arm_rows[0][0] as W.Btn).pressed.connect(func(): battle.set_armed(false, not bool(battle.get_ship(0)["gun_armed"])))
+	(arm_rows[1][0] as W.Btn).pressed.connect(func(): battle.set_armed(true, not bool(battle.get_ship(0)["laser_armed"])))
+	for i in [2, 3]:
+		var row: Array = arm_rows[i]
+		(row[0] as W.Btn).locked = true
+		(row[0] as W.Btn).text = "SAFE"
+		(row[2] as W.Txt).set_text(["PD laser pair", "VLS ×12"][i - 2], W.FAINT)
+		(row[3] as W.Txt).set_text("not in demo", W.FAINT)
+		(row[4] as W.Screen).set_text("--", W.FAINT)
+	y += 4 * 45 + 8
+	# fire mode
+	_add(W.Header.new("Fire mode", W.PRI, "", 260), Vector2(x, y))
+	y += 31
+	var mw := (260.0 - 4) / 3
+	for m in [["F1", "Manual", 0], ["F2", "Preset", 1], ["F3", "Auto", 2]]:
+		var mi: int = m[2]
+		var b := _btn("tab", m[1], Vector2(x + mi * (mw + 2), y), Vector2(mw, 32), func(): _set_mode(mi))
+		b.key = m[0]; b.font_size = 12
 		mode_btns.append(b)
-	v.add_child(modes)
-	v.add_child(UI.label("Target system (manual)", 10, UI.MUTED, true))
-	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.add_theme_constant_override("h_separation", 2)
-	grid.add_theme_constant_override("v_separation", 2)
-	for i in SYS_NAMES.size():
-		var si := i
-		var b := UI.button(SYS_NAMES[i], func(): battle.set_fire_mode(1, si), UI.PRI, 128)
-		b.custom_minimum_size.y = 30
-		grid.add_child(b)
-		target_btns.append(b)
-	v.add_child(grid)
-	var pre := GridContainer.new()
-	pre.columns = 2
-	pre.add_theme_constant_override("h_separation", 2)
-	pre.add_theme_constant_override("v_separation", 2)
-	for pr in PRESETS:
-		var si: int = pr[1]
-		var b := UI.button(pr[0], func(): battle.set_fire_mode(1, si), UI.PRI, 128)
-		b.custom_minimum_size.y = 30
-		pre.add_child(b)
-		preset_btns.append(b)
-	v.add_child(pre)
-
-	v.add_child(UI.header("Maneuver"))
-	var burns := GridContainer.new()
-	burns.columns = 3
-	burns.add_theme_constant_override("h_separation", 2)
-	burns.add_theme_constant_override("v_separation", 2)
-	for bn in [["Toward", 1], ["Away", 2], ["Match", 5], ["Left", 3], ["Right", 4], ["Drive off", 0]]:
-		var bi: int = bn[1]
-		var b := UI.button(bn[0], func(): battle.set_burn(bi, throttle.value / 100.0), UI.PRI, 84)
-		b.custom_minimum_size.y = 30
-		burns.add_child(b)
-		burn_btns.append(b)
-	v.add_child(burns)
-	var th := HBoxContainer.new()
-	th.add_child(UI.label("THROTTLE", 11, UI.MUTED))
-	throttle = HSlider.new()
-	throttle.min_value = 10
-	throttle.max_value = 100
-	throttle.value = 100
-	throttle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	throttle.focus_mode = Control.FOCUS_NONE
-	throttle.value_changed.connect(_on_throttle)
-	th.add_child(throttle)
-	v.add_child(th)
-	v.add_child(UI.label("Facing", 10, UI.MUTED, true))
-	var fac := HBoxContainer.new()
-	fac.add_theme_constant_override("separation", 2)
-	for f in [["Nose on", 0], ["Broadside roll", 1], ["Stern", 2]]:
-		var fi: int = f[1]
-		var b := UI.button(f[0], func(): battle.set_facing(fi), UI.PRI)
-		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		b.custom_minimum_size.y = 30
-		fac.add_child(b)
-		facing_btns.append(b)
-	v.add_child(fac)
-	var hint := UI.label("Nose on: thickest armour, spinal gun bears.\nBroadside roll: lasers do 35 %, but no gun\nand your laser is blocked part of each turn.", 10, UI.FAINT)
-	v.add_child(hint)
-
-func _build_right() -> void:
-	var p := UI.panel(Rect2(1128, 72, 296, 470))
-	hud.add_child(p)
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 8)
-	p.add_child(v)
-	v.add_child(UI.header("Heat", UI.SEC))
-	var hr := HBoxContainer.new()
-	heat_bar = UI.bar(190, 12)
-	heat_bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	hr.add_child(heat_bar)
-	heat_lbl = UI.label("", 14, UI.TEXT)
-	hr.add_child(heat_lbl)
-	v.add_child(hr)
-	rad_btn = UI.button("Radiators extended", func(): battle.set_radiators(not bool(battle.get_ship(0)["radiators_extended"])), UI.SEC)
-	rad_btn.tooltip_text = "Extended: sheds heat fast but radiators can be shot off.\nRetracted: safe from hits, heat builds."
-	v.add_child(rad_btn)
-	var ew := HBoxContainer.new()
-	ew.add_theme_constant_override("separation", 2)
-	for n in ["Go dark", "Jam", "Decoy", "ECM"]:
-		var b := UI.locked(n, 64)
-		ew.add_child(b)
-	v.add_child(ew)
-
-	v.add_child(UI.header("Damage control", UI.SEC))
-	var tr := HBoxContainer.new()
-	teams_lbl = UI.label("", 12, UI.MUTED)
-	teams_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	tr.add_child(teams_lbl)
-	auto_rep_btn = UI.button("Auto", func(): battle.set_auto_repair(not bool(battle.get_ship(0)["auto_repair"])), UI.SEC, 64)
-	auto_rep_btn.custom_minimum_size.y = 26
-	tr.add_child(auto_rep_btn)
-	v.add_child(tr)
-	for i in SYS_NAMES.size():
-		var si := i
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 6)
-		var n := UI.label(SYS_NAMES[i], 13, UI.TEXT, true)
-		n.custom_minimum_size.x = 82
-		row.add_child(n)
-		var b := UI.bar(90, 8)
-		b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		row.add_child(b)
-		var st := UI.label("", 11, UI.MUTED)
-		st.custom_minimum_size.x = 40
-		row.add_child(st)
-		var fix := UI.button("Fix", func(): battle.order_repair(si), UI.SEC, 40)
-		fix.custom_minimum_size.y = 24
-		row.add_child(fix)
-		v.add_child(row)
-		sys_rows.append([n, b, st, fix])
+	y += 39
+	guard = W.Guard.new()
+	guard.pressed.connect(_toggle_free)
+	_add(guard, Vector2(x, y))
+	free_txt = W.Txt.new("WEAPONS FREE", 18, W.PRI, false, 190)
+	_add(free_txt, Vector2(x + 66, y + 10))
+	free_sub = W.Txt.new("guard open · Space to safe", 10, W.MUTED, true, 190)
+	_add(free_sub, Vector2(x + 66, y + 34))
+	y += 64
+	# target select
+	tgt_hdr = W.Header.new("Target select", W.PRI, "TRK --", 260)
+	_add(tgt_hdr, Vector2(x, y))
+	y += 31
+	tgt_scr = W.Screen.new("", Vector2(260, 26), W.PRI, 13)
+	_add(tgt_scr, Vector2(x, y))
+	y += 33
+	var cw := (260.0 - 12) / 4
+	for i in 8:
+		var pos := Vector2(x + (i % 4) * (cw + 4), y + (i / 4) * 44)
+		var b: W.Btn
+		if i < 6:
+			var si := i
+			b = _btn("cap", SYS_ABBR[i], pos, Vector2(cw, 40), func(): _pick_target(si))
+		else:
+			b = _locked("cap", ["RCT", "MAG"][i - 6], pos, Vector2(cw, 40))
+			b.sub = "--"
+		tgt_btns.append(b)
+	y += 92
+	# rotation / translation
+	_add(W.Header.new("Rotation · translation", W.SEC, "", 260), Vector2(x, y))
+	y += 31
+	var helm := [["Q", "⟲ Roll", "roll"], ["W", "▲ Close", 1], ["E", "Roll ⟳", "roll"], ["X", "Match", 5],
+		["A", "◀ Left", 3], ["S", "▼ Open", 2], ["D", "Right ▶", 4], ["T", "On tgt", "nose"]]
+	for i in helm.size():
+		var h: Array = helm[i]
+		var act = h[2]
+		var b := _btn("cap", h[1], Vector2(x + (i % 4) * (cw + 4), y + (i / 4) * 46), Vector2(cw, 42), func(): _helm(act))
+		b.top = h[0]; b.font_size = 12
+		helm_btns.append(b)
+	y += 96
+	drive_txt = W.Txt.new("", 10, W.MUTED, true, 180)
+	_add(drive_txt, Vector2(x, y))
+	thr_txt = W.Txt.new("", 10, W.TEXT, true, 80)
+	thr_txt.align = HORIZONTAL_ALIGNMENT_RIGHT
+	_add(thr_txt, Vector2(x + 180, y))
+	y += 17
+	thr_segs = W.Segs.new(20, Vector2(260, 10), W.PRI)
+	thr_segs.clicked.connect(func(k: int): _set_throttle(maxf(0.1, (k + 1) / 20.0)))
+	_add(thr_segs, Vector2(x, y))
+	y += 18
+	ignite = _btn("cap", "IGNITE", Vector2(x, y), Vector2(127, 42), _toggle_ignite)
+	ignite.hazard = true; ignite.font_size = 16
+	var dark := _locked("cap", "GO DARK", Vector2(x + 133, y), Vector2(127, 42))
+	dark.sub = "cut drive · sink heat"; dark.font_size = 15
 
 func _build_bottom() -> void:
-	# EO sensor window, bottom right.
-	var p := UI.panel(Rect2(1128, 554, 296, 330))
-	hud.add_child(p)
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 6)
-	p.add_child(v)
-	var tabs := HBoxContainer.new()
-	tabs.add_theme_constant_override("separation", 2)
-	var eo := UI.button("EO", Callable(), UI.SEC, 56)
-	UI.set_active(eo, true, UI.SEC)
-	tabs.add_child(eo)
-	for n in ["Radar", "Lidar", "IR"]:
-		tabs.add_child(UI.locked(n, 64))
-	v.add_child(tabs)
-	eo_rect = TextureRect.new()
-	eo_rect.texture = eo_vp.get_texture()
-	eo_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	eo_rect.custom_minimum_size = Vector2(268, 210)
-	eo_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	eo_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	v.add_child(eo_rect)
-	eo_info = UI.label("", 11, UI.SEC)
-	v.add_child(eo_info)
-	# Event log, bottom centre.
-	var lp := UI.panel(Rect2(312, 768, 804, 116))
-	hud.add_child(lp)
-	log_lbl = UI.label("", 12, UI.TEXT)
-	log_lbl.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
-	lp.add_child(log_lbl)
+	var y := 768.0
+	_add(W.Txt.new("Δv REMAINING · M/S", 10, W.FAINT, true, 160), Vector2(324, y + 14))
+	for i in 4:
+		var d := W.Screen.new("0", Vector2(26, 38), W.PRI, 26)
+		_add(d, Vector2(324 + i * 28, y + 33))
+		dv_scr.append(d)
+	fuel_txt = W.Txt.new("", 10, W.MUTED, true, 160)
+	_add(fuel_txt, Vector2(324, y + 76))
+	ball = W.Ball.new()
+	_add(ball, Vector2(476, y + 6))
+	_add(W.Txt.new("ATTITUDE · Y / P / R", 10, W.FAINT, true, 170), Vector2(604, y + 22))
+	att_scr = W.Screen.new("", Vector2(150, 34), W.TEXT, 19)
+	_add(att_scr, Vector2(604, y + 40))
+	rwr_txt = W.Txt.new("", 10, W.MUTED, true, 190)
+	_add(rwr_txt, Vector2(604, y + 80))
+	var vw := (268.0 - 9) / 4
+	var views := [["Own", "own"], ["Enemy", "enemy"], ["Chase", "chase"], ["Aim", ""], ["Real", "real"], ["Armor", "armor"], ["Eclipse", ""], ["IR view", ""]]
+	for i in views.size():
+		var pos := Vector2(836 + (i % 4) * (vw + 3), y + 24 + (i / 4) * 33)
+		var v: String = views[i][1]
+		var b: W.Btn
+		if v == "":
+			b = _locked("tab", views[i][0], pos, Vector2(vw, 30))
+		else:
+			b = _btn("tab", views[i][0], pos, Vector2(vw, 30), func(): _view(v))
+		b.font_size = 12
+		view_btns.append(b)
+
+func _build_right() -> void:
+	_add(W.Frame.new(Rect2(1128, 72, 296, 812), [20, 0, 0, 0], W.SEC, Vector2(200, 295)), Vector2(1128, 72))
+	var x := 1142.0
+	var y := 84.0
+	# caution / warning
+	_add(W.Header.new("Caution · warning", W.SEC, "", 268), Vector2(x, y))
+	y += 30
+	var names := ["Wpn free", "Track", "Incoming", "Laser warn", "Heat", "Lockout", "Hull", "Drive", "Repair", "Δv low", "Rad stow", "Master alm"]
+	var lw := (268.0 - 6) / 3
+	for i in names.size():
+		var l := W.Lamp.new(names[i], Vector2(lw, 26))
+		_add(l, Vector2(x + (i % 3) * (lw + 3), y + (i / 3) * 29))
+		lamps.append(l)
+	y += 4 * 29 + 9
+	# heat
+	_add(W.Txt.new("HEAT", 18, W.HOT, false, 50), Vector2(x, y + 3))
+	var ht := _btn("tab", "Thermal", Vector2(x + 50, y), Vector2(78, 26))
+	ht.active = true; ht.font_size = 12
+	var hs := _locked("tab", "Stealth", Vector2(x + 130, y), Vector2(78, 26))
+	hs.font_size = 12
+	heat_rate_txt = W.Txt.new("", 10, W.FAINT, true, 58)
+	heat_rate_txt.align = HORIZONTAL_ALIGNMENT_RIGHT
+	_add(heat_rate_txt, Vector2(x + 210, y + 7))
+	y += 33
+	ring = W.Ring.new()
+	_add(ring, Vector2(x, y))
+	var big := W.Txt.new("", 22, W.PRI, false, 180)
+	_add(big, Vector2(x + 90, y + 2))
+	heat_lines.append(big)
+	for k in 3:
+		var t := W.Txt.new("", 11, W.TEXT, true, 180)
+		_add(t, Vector2(x + 90, y + 30 + k * 15))
+		heat_lines.append(t)
+	y += 86
+	_add(W.Txt.new("RADIATORS", 10, W.MUTED, true, 100), Vector2(x, y))
+	rad_txt = W.Txt.new("", 10, W.SEC, true, 168)
+	rad_txt.align = HORIZONTAL_ALIGNMENT_RIGHT
+	_add(rad_txt, Vector2(x + 100, y))
+	y += 17
+	for k in 2:
+		var ext := k == 0
+		var b := _btn("tab", ["Extend", "Stow"][k], Vector2(x + k * 135, y), Vector2(133, 26), func(): battle.set_radiators(ext))
+		b.font_size = 12; b.accent = W.SEC
+		rad_btns.append(b)
+	y += 38
+	# damage control checklist
+	dc_hdr = W.Header.new("Damage ctrl", W.MUTED, "", 212)
+	_add(dc_hdr, Vector2(x, y))
+	auto_btn = _btn("tab", "Auto", Vector2(x + 216, y - 2), Vector2(52, 24), func(): battle.set_auto_repair(not bool(battle.get_ship(0)["auto_repair"])))
+	auto_btn.font_size = 11; auto_btn.accent = W.SEC
+	auto_btn.tooltip_text = "Auto: repair teams take the worst damage first.\nClick a line on the card to send a team yourself."
+	y += 30
+	paper = W.Paper.new(Vector2(268, 104))
+	paper.line_clicked.connect(_on_dc_line)
+	_add(paper, Vector2(x, y))
+	y += 116
+	# scope: EO only in the demo
+	_add(W.Txt.new("SCOPE", 18, W.PRI, false, 70), Vector2(x, y + 4))
+	var sw := (268.0 - 72 - 8) / 5
+	var sn := ["RDR", "LDR", "EO", "IR", "ESM"]
+	for i in 5:
+		var pos := Vector2(x + 72 + i * (sw + 2), y)
+		var b: W.Btn
+		if sn[i] == "EO":
+			b = _btn("tab", "EO", pos, Vector2(sw, 28))
+			b.active = true
+		else:
+			b = _locked("tab", sn[i], pos, Vector2(sw, 28))
+		b.font_size = 12
+	y += 34
+	_painter(Rect2(x, y, 268, 268), func(c: Control):
+		var p := PackedVector2Array([Vector2(13, 0), Vector2(268, 0), Vector2(268, 255), Vector2(255, 268), Vector2(0, 268), Vector2(0, 13)])
+		c.draw_colored_polygon(p, W.KEY_BG)
+		p.append(p[0])
+		c.draw_polyline(p, W.LINE, 1.0))
+	var eo := TextureRect.new()
+	eo.texture = eo_vp.get_texture()
+	eo.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	eo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	eo.stretch_mode = TextureRect.STRETCH_SCALE
+	eo.size = Vector2(240, 240)
+	eo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_add(eo, Vector2(x + 14, y + 14))
+	scope_over = _painter(Rect2(x + 14, y + 14, 240, 240), func(c: Control):
+		c.draw_rect(Rect2(0.5, 0.5, 239, 239), W.LINE, false, 1.0)
+		for corner in [[Vector2(4, 4), 1, 1], [Vector2(236, 4), -1, 1], [Vector2(4, 236), 1, -1], [Vector2(236, 236), -1, -1]]:
+			var o: Vector2 = corner[0]
+			c.draw_line(o, o + Vector2(11 * corner[1], 0), W.PRI, 2)
+			c.draw_line(o, o + Vector2(0, 11 * corner[2]), W.PRI, 2)
+		c.draw_string(W.FM, Vector2(10, 18), eo_label_t1, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, W.PRI)
+		var tw := W.FM.get_string_size(eo_label_t2, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x
+		c.draw_string(W.FM, Vector2(230 - tw, 230), eo_label_t2, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, W.MUTED))
+	y += 274
+	scope_foot_l = W.Txt.new("EO TELESCOPE · 1.2 m", 10, W.MUTED, true, 160)
+	_add(scope_foot_l, Vector2(x, y))
+	scope_foot_r = W.Txt.new("", 10, W.SEC, true, 108)
+	scope_foot_r.align = HORIZONTAL_ALIGNMENT_RIGHT
+	_add(scope_foot_r, Vector2(x + 160, y))
+
+# ------------------------------------------------------------------ orders
+
+func _set_mode(mi: int) -> void:
+	var own: Dictionary = battle.get_ship(0)
+	preset_mode = mi == 1
+	battle.set_fire_mode(0 if mi == 2 else 1, int(own["target_sys"]))
+
+func _pick_target(si: int) -> void:
+	# Picking a target in auto switches to manual, as on the prototype.
+	if int(battle.get_ship(0)["fire_mode"]) == 0:
+		preset_mode = false
+	battle.set_fire_mode(1, si)
+
+func _toggle_free() -> void:
+	battle.set_weapons_free(not bool(battle.get_ship(0)["weapons_free"]))
+
+func _set_throttle(v: float) -> void:
+	throttle = v
+	var b := int(battle.get_ship(0)["burn"])
+	if b != 0:
+		battle.set_burn(b, throttle)
+
+func _toggle_ignite() -> void:
+	if int(battle.get_ship(0)["burn"]) != 0:
+		battle.set_burn(0, throttle)
+	else:
+		battle.set_burn(sel_burn, throttle)
+
+func _helm(act) -> void:
+	if act is String:
+		if act == "roll":
+			battle.set_facing(0 if int(battle.get_ship(0)["facing"]) == 1 else 1)
+		elif act == "nose":
+			battle.set_facing(0)
+	else:
+		sel_burn = int(act)
+		if int(battle.get_ship(0)["burn"]) != 0:
+			battle.set_burn(sel_burn, throttle)
+
+func _view(v: String) -> void:
+	match v:
+		"own": view_target = false
+		"enemy": view_target = true
+		"chase": chase = not chase
+		"real": armor_view = false
+		"armor": armor_view = true
+
+func _on_dc_line(i: int) -> void:
+	if i < dc_line_sys.size() and int(dc_line_sys[i]) >= 0:
+		battle.order_repair(int(dc_line_sys[i]))
+
+# ------------------------------------------------------------------ HUD update
+
+func _own_name() -> String:
+	if battle == null: return "Dagger"
+	return "ESF " + str(battle.get_ship(0)["name"])
+
+func _own_class() -> String:
+	if battle == null: return ""
+	return ["LASER CRUISER", "COILGUN CRUISER", "FRIGATE"][ship_class] + " · EARTH"
+
+func _foe_name() -> String:
+	return "MRS " + str(battle.get_ship(1)["name"]).to_upper().replace("MARS ", "")
 
 func _update_hud() -> void:
 	var own: Dictionary = battle.get_ship(0)
 	var foe: Dictionary = battle.get_ship(1)
-	nameplate.text = str(own["name"]).to_upper()
-	nameplate_sub.text = "EARTH · CREW %d/%d · HULL %d%%" % [own["crew"], own["crew_max"], int(float(own["hull"]) * 100)]
-	var hullf: float = own["hull"]
-	for i in hull_segs.size():
-		hull_segs[i].color = UI.SEC if float(i) / hull_segs.size() < hullf else UI.LINE
-	clock_lbl.text = "T+ %s   RANGE %.1f KM   CLOSING %.0f M/S" % [_clock(battle.get_time()), battle.get_range_km(), battle.get_closing()]
-	for i in speed_btns.size():
-		UI.set_active(speed_btns[i], i == battle.get_speed(), UI.SEC)
-	speed_btns[6].disabled = not battle.get_cruise_allowed()
-	drop_lbl.text = battle.get_drop_reason()
-	vp_title.text = ("TARGET · %s" % str(foe["name"]).to_upper()) if view_target else "OWN SHIP · %s" % str(own["name"]).to_upper()
-	vp_sub.text = ("armour condition" if armor_view else "real colour") + ("  ·  chase cam" if chase and not view_target else "")
-	UI.set_active(view_btns[0], not view_target, UI.SEC)
-	UI.set_active(view_btns[1], view_target, UI.SEC)
-	UI.set_active(view_btns[2], not armor_view, UI.SEC)
-	UI.set_active(view_btns[3], armor_view, UI.SEC)
-	UI.set_active(view_btns[4], chase, UI.SEC)
-	# Armament.
 	var health: PackedFloat64Array = own["health"]
-	var lr: Array = arm_rows["laser"]
-	lr[0].color = UI.health_color(health[1])
-	lr[1].text = "Laser turret"
-	lr[2].text = "firing" if own["laser_firing"] else ("destroyed" if health[1] <= 0 else ("overheated" if float(own["heat"]) >= 100 else "idle"))
-	lr[3].text = "%d%%" % int(health[1])
-	var gr: Array = arm_rows["gun"]
-	var gun: int = own["gun"]
-	gr[1].text = ["No gun fitted", "Railgun", "Spinal coilgun"][gun]
-	if gun == 0:
-		gr[0].color = UI.LINE; gr[2].text = ""; gr[3].text = ""
-	else:
-		gr[0].color = UI.health_color(health[2])
-		var cd: float = own["gun_cooldown"]
-		gr[2].text = ("reloading %.0f s" % cd) if cd > 0 else ("%d%% to hit" % int(battle.get_hit_chance() * 100) if battle.get_hit_chance() > 0 else "out of range or not bearing")
-		gr[3].text = "%03d" % int(own["ammo"])
-	# Fire control.
-	var free: bool = own["weapons_free"]
-	free_btn.text = "WEAPONS FREE" if free else "WEAPONS HOLD"
-	UI.set_active(free_btn, free, UI.HOT)
-	var mode: int = own["fire_mode"]
-	UI.set_active(mode_btns[0], mode == 0)
-	UI.set_active(mode_btns[1], mode == 1)
-	var q: float = battle.get_sensor_quality()
 	var fh: PackedFloat64Array = foe["health"]
-	for i in target_btns.size():
-		var known := q > 0.3
-		target_btns[i].text = "%s %s" % [SYS_NAMES[i].to_upper(), ("%d" % int(fh[i])) if known else "?"]
-		UI.set_active(target_btns[i], mode == 1 and int(own["target_sys"]) == i)
-	for i in preset_btns.size():
-		UI.set_active(preset_btns[i], mode == 1 and int(own["target_sys"]) == int(PRESETS[i][1]))
+	var q: float = battle.get_sensor_quality()
+	var known := q > 0.3
+	var t: float = battle.get_time()
+	nameplate.queue_redraw()
+	ship_tab.set_text(str(own["name"]))
+	cond_badge.queue_redraw()
+	overlay.queue_redraw()
+	clock_scr.set_text("%03d:%02d:%02d" % [int(t) / 3600, (int(t) / 60) % 60, int(t) % 60])
+	for i in speed_btns.size():
+		(speed_btns[i] as W.Btn).set_state(i == battle.get_speed())
+	var cruise_b: W.Btn = speed_btns[6]
+	if cruise_b.locked == battle.get_cruise_allowed():
+		cruise_b.locked = not battle.get_cruise_allowed()
+		cruise_b.queue_redraw()
+	drop_txt.set_text(str(battle.get_drop_reason()).to_upper())
+
+	# armament: row 0 the gun, row 1 the laser
+	var gun: int = own["gun"]
+	var r0: Array = arm_rows[0]
+	var gb: W.Btn = r0[0]
+	if gun == 0:
+		gb.locked = true
+		gb.text = "SAFE"
+		(r0[1] as W.Flag).set_on(false)
+		(r0[2] as W.Txt).set_text("No gun fitted", W.FAINT)
+		(r0[3] as W.Txt).set_text("Lance only", W.FAINT)
+		(r0[4] as W.Screen).set_text("--", W.FAINT)
+		gb.queue_redraw()
+	else:
+		var armed: bool = own["gun_armed"]
+		gb.set_state(armed)
+		gb.set_text("ARM" if armed else "SAFE")
+		(r0[1] as W.Flag).set_on(armed)
+		var gh := health[2]
+		var name := "Spinal coilgun" if gun == 2 else "Railgun"
+		(r0[2] as W.Txt).set_text(name, (W.PRI if armed else W.MUTED) if gh > 0 else W.HOT)
+		var cd: float = own["gun_cooldown"]
+		var sub := ""
+		if gh <= 0: sub = "DESTROYED"
+		elif cd > 0: sub = "RLD %02d s" % int(ceil(cd))
+		elif battle.get_hit_chance() > 0: sub = "RDY · ▸ %s · %d%%" % [SYS_ABBR[int(own["target_sys"])], int(battle.get_hit_chance() * 100)]
+		else: sub = "RDY · no arc/range"
+		(r0[3] as W.Txt).set_text(sub, W.HOT if gh <= 0 else W.MUTED)
+		(r0[4] as W.Screen).set_text("%02d" % int(own["ammo"]), W.PRI if armed else W.MUTED)
+		gb.queue_redraw()
+	var r1: Array = arm_rows[1]
+	var la: bool = own["laser_armed"]
+	(r1[0] as W.Btn).set_state(la)
+	(r1[0] as W.Btn).set_text("ARM" if la else "SAFE")
+	(r1[1] as W.Flag).set_on(la)
+	var lh := health[1]
+	(r1[2] as W.Txt).set_text("Laser turret", (W.PRI if own["laser_firing"] else (W.TEXT if la else W.MUTED)) if lh > 0 else W.HOT)
+	var ls := "SAFE"
+	if lh <= 0: ls = "DESTROYED"
+	elif bool(own["overheated"]): ls = "LOCKOUT · HEAT"
+	elif own["laser_firing"]: ls = "FIRING ▸ %s" % SYS_ABBR[int(own["target_sys"])]
+	elif la: ls = "RDY · %d%% HP" % int(lh)
+	(r1[3] as W.Txt).set_text(ls, W.HOT if lh <= 0 or bool(own["overheated"]) else W.MUTED)
+	(r1[4] as W.Screen).set_text("--", W.PRI if la else W.MUTED)
+
+	# fire mode
+	var mode: int = own["fire_mode"]
+	var ui_mode := 2 if mode == 0 else (1 if preset_mode else 0)
+	for i in 3:
+		(mode_btns[i] as W.Btn).set_state(i == ui_mode)
+	var free: bool = own["weapons_free"]
+	guard.set_open(free)
+	free_txt.set_text("WEAPONS FREE" if free else "WEAPONS SAFE", W.PRI if free else W.MUTED)
+	free_sub.set_text("guard open · Space to safe" if free else "guard closed · Space to arm")
+
+	# target select
+	var ts: int = own["target_sys"]
+	tgt_hdr.set_hint("TRK %d%%" % int(q * 100))
+	tgt_scr.set_text("%s|▸ %s|%s" % [_foe_name().replace("MRS ", ""), SYS_NAMES[ts].to_upper(), ("%d%%" % int(fh[ts])) if known else "??"])
+	for i in 6:
+		var b: W.Btn = tgt_btns[i]
+		var v := ("%d" % int(fh[i])) if known else "??"
+		if preset_mode:
+			b.set_text(PRESET_VERB[i], SYS_ABBR[i])
+		else:
+			b.set_text(SYS_ABBR[i], v)
+		b.set_state(i == ts)
+		var dash := not known
+		if b.dashed != dash:
+			b.dashed = dash
+			b.modulate.a = 0.45 if dash else 1.0
+			b.queue_redraw()
+
+	# helm and drive
+	var facing: int = own["facing"]
 	var burn: int = own["burn"]
-	for i in burn_btns.size():
-		UI.set_active(burn_btns[i], [1, 2, 5, 3, 4, 0][i] == burn)
-	for i in facing_btns.size():
-		UI.set_active(facing_btns[i], int(own["facing"]) == i)
-	# Heat and damage control.
+	var helm_act := [-1, 1, -1, 5, 3, 2, 4, -2]
+	for i in helm_btns.size():
+		var a: int = helm_act[i]
+		var on := false
+		if a == -1: on = facing == 1
+		elif a == -2: on = facing == 0
+		else: on = a == (burn if burn != 0 else sel_burn)
+		(helm_btns[i] as W.Btn).set_state(on)
+	drive_txt.set_text("MAIN DRIVE · " + ("BURNING" if burn != 0 else "IDLE"), W.PRI if burn != 0 else W.MUTED)
+	thr_txt.set_text("THR %d%%" % int(round(throttle * 100)))
+	thr_segs.set_on(int(round(throttle * 20)), W.PRI if burn != 0 else W.KEY_LINE)
+	ignite.set_text("CUT DRIVE" if burn != 0 else "IGNITE")
+	ignite.accent = W.HOT if burn != 0 else W.PRI
+
+	# Δv and attitude
+	var dv: float = own["dv_left"]
+	var dv_s := "%04d" % clampi(int(dv), 0, 9999)
+	for i in 4:
+		(dv_scr[i] as W.Screen).set_text(dv_s[i], W.PRI if dv > 0.2 * float(own["dv_max"]) else W.HOT)
+	fuel_txt.set_text("PROPELLANT %d%%" % int(100.0 * dv / maxf(1.0, float(own["dv_max"]))))
+	var rel: Vector2 = Vector2(foe["pos"]) - Vector2(own["pos"])
+	var brg := rel.angle()
+	var off := rad_to_deg(wrapf(brg - float(own["heading"]), -PI, PI))
+	ball.set_att(roll_angle, off)
+	var hdg := int(round(rad_to_deg(wrapf(float(own["heading"]), 0, TAU)))) % 360
+	att_scr.set_text("%03d %+03d %+04d" % [hdg, 0, int(rad_to_deg(roll_angle))])
+	if foe["laser_firing"]:
+		rwr_txt.set_text("LASER WARNING · UNDER FIRE", W.HOT)
+	else:
+		rwr_txt.set_text("TGT BRG %03d · OFF NOSE %+d°" % [int(round(rad_to_deg(wrapf(brg, 0, TAU)))) % 360, int(off)], W.MUTED)
+	var vstate := [not view_target, view_target, chase, false, not armor_view, armor_view, false, false]
+	for i in view_btns.size():
+		(view_btns[i] as W.Btn).set_state(vstate[i])
+
+	# caution / warning
 	var heat: float = own["heat"]
-	heat_bar.value = heat
-	UI.bar_color(heat_bar, UI.HOT if heat >= 80 else (UI.PRI if heat >= 50 else UI.SEC))
-	heat_lbl.text = " %d" % int(heat)
-	rad_btn.text = "RADIATORS EXTENDED" if own["radiators_extended"] else "RADIATORS RETRACTED"
+	var incoming := false
+	for s in battle.get_shots():
+		if int(s["shooter"]) == 1: incoming = true
 	var reps: Array = own["repairs"]
-	teams_lbl.text = "REPAIR TEAMS %d/%d" % [int(own["teams"]) - reps.size(), int(own["teams"])]
-	UI.set_active(auto_rep_btn, own["auto_repair"], UI.SEC)
-	for i in sys_rows.size():
-		var row: Array = sys_rows[i]
-		var hv: float = health[i]
-		var na := i == 2 and gun == 0
-		row[1].value = 0 if na else hv
-		UI.bar_color(row[1], UI.health_color(hv))
-		var job := ""
-		for r in reps:
-			if int(r["sys"]) == i: job = "%.0f s" % float(r["left"])
-		row[2].text = "—" if na else (job if job != "" else "%d%%" % int(hv))
-		row[2].add_theme_color_override("font_color", UI.SEC if job != "" else UI.MUTED)
-		row[3].disabled = na or hv >= 100 or job != ""
-	# EO window.
-	eo_info.text = "EO TRACK %d%%  ·  %s" % [int(q * 100), "components resolved" if q > 0.5 else ("outline only" if q > 0.25 else "point source")]
-	log_lbl.text = "\n".join(log_lines)
+	var states := [
+		"a" if free else "",
+		"s" if known else "",
+		"r" if incoming else "",
+		"r" if foe["laser_firing"] else "",
+		("r" if heat >= 90 else "a") if heat >= 70 else "",
+		"r" if bool(own["overheated"]) else "",
+		("r" if float(own["hull"]) < 0.5 else "a") if float(own["hull"]) < 0.85 else "",
+		("r" if health[0] <= 0 else "a") if health[0] < 60 else "",
+		"s" if reps.size() > 0 else "",
+		"a" if dv < 0.2 * float(own["dv_max"]) else "",
+		"a" if not bool(own["radiators_extended"]) else "",
+		"",
+	]
+	var any_red := false
+	for s in states:
+		if s == "r": any_red = true
+	states[11] = "r" if any_red else ""
+	for i in lamps.size():
+		(lamps[i] as W.Lamp).set_lamp(states[i])
+
+	# heat
+	ring.set_value(heat)
+	heat_rate_txt.set_text("%+.1f/s" % heat_rate, W.HOT if heat_rate > 0.3 else W.FAINT)
+	var big: W.Txt = heat_lines[0]
+	if bool(own["overheated"]):
+		big.set_text("LOCKOUT", W.HOT)
+	elif heat_rate > 0.05:
+		var s := (100.0 - heat) / heat_rate
+		big.set_text("%d:%02d to lockout" % [int(s) / 60, int(s) % 60], W.PRI)
+	else:
+		big.set_text("STABLE", W.SEC)
+	(heat_lines[1] as W.Txt).set_text("Heat %d / 100" % int(heat))
+	(heat_lines[2] as W.Txt).set_text("Weapons lock at 100" if not bool(own["overheated"]) else "Locked until below 70", W.TEXT if not bool(own["overheated"]) else W.HOT)
+	(heat_lines[3] as W.Txt).set_text("Laser & drive add heat", W.MUTED)
+	var ext: bool = own["radiators_extended"]
+	rad_txt.set_text("EXTENDED · fast cooling" if ext else "STOWED · safe from hits", W.SEC if ext else W.PRI)
+	(rad_btns[0] as W.Btn).set_state(ext)
+	(rad_btns[1] as W.Btn).set_state(not ext)
+
+	# damage control card
+	var teams: int = own["teams"]
+	dc_hdr.set_hint("TEAMS %d/%d" % [teams - reps.size(), teams])
+	auto_btn.set_state(own["auto_repair"])
+	var pl: Array = []
+	dc_line_sys.clear()
+	var busy := {}
+	for r in reps:
+		busy[int(r["sys"])] = true
+		pl.append(["☐", "REPAIR %s" % SYS_NAMES[int(r["sys"])].to_upper(), "%d s" % int(ceil(float(r["left"]))), W.INK])
+		dc_line_sys.append(-1)
+	var dmg: Array = []
+	for i in 6:
+		if i == 2 and gun == 0: continue
+		if health[i] < 100 and not busy.has(i): dmg.append(i)
+	dmg.sort_custom(func(a, b): return health[a] < health[b])
+	for i in dmg:
+		if pl.size() >= 5: break
+		var hv := health[i]
+		pl.append(["⚠" if hv < 45 else "▸", "%s %d%%  ▸ FIX" % [SYS_NAMES[i].to_upper(), int(hv)], "", W.INK_HOT if hv < 45 else W.INK])
+		dc_line_sys.append(i)
+	if pl.is_empty():
+		pl.append(["☒", "ALL SYSTEMS NOMINAL", "", W.INK])
+		dc_line_sys.append(-1)
+	for k in range(log_lines.size() - 1, -1, -1):
+		if pl.size() >= 5: break
+		var l: Array = log_lines[k]
+		var txt: String = str(l[0]).to_upper()
+		if txt.length() > 24: txt = txt.substr(0, 23) + "…"
+		pl.append(["☒", txt, l[1], W.INK_DIM])
+		dc_line_sys.append(-1)
+	paper.set_lines(pl)
+
+	# scope
+	eo_label_t1 = "EO · VIS · TRK %d%%" % int(q * 100)
+	eo_label_t2 = "components resolved" if q > 0.5 else ("outline only" if q > 0.25 else "point source")
+	scope_over.queue_redraw()
+	scope_foot_r.set_text("TRACK %d%%" % int(q * 100))
+
+func _draw_overlay(c: Control) -> void:
+	if battle == null: return
+	var own: Dictionary = battle.get_ship(0)
+	var foe: Dictionary = battle.get_ship(1)
+	var q: float = battle.get_sensor_quality()
+	var known := q > 0.3
+	# mask the cut corners and draw the frame
+	c.draw_colored_polygon(PackedVector2Array([Vector2(0, 0), Vector2(22, 0), Vector2(0, 22)]), W.BG)
+	c.draw_colored_polygon(PackedVector2Array([Vector2(804, 662), Vector2(804, 684), Vector2(782, 684)]), W.BG)
+	c.draw_polyline(PackedVector2Array([Vector2(22.5, 0.5), Vector2(803.5, 0.5), Vector2(803.5, 661.5), Vector2(781.5, 683.5), Vector2(0.5, 683.5), Vector2(0.5, 22.5), Vector2(22.5, 0.5)]), W.LINE, 1.5)
+	c.draw_line(Vector2(22, 1), Vector2(120, 1), W.PRI, 3)
+	c.draw_line(Vector2(1, 22), Vector2(1, 120), W.PRI, 3)
+	c.draw_line(Vector2(803, 562), Vector2(803, 683), W.PRI, 3)
+	c.draw_line(Vector2(782, 683), Vector2(684, 683), W.PRI, 3)
+	# titles
+	var title := ("TGT-1 · %s · EO RECON" % _foe_name()) if view_target else ("OWN SHIP · %s" % ("ARMOR CONDITION" if armor_view else "REAL COLOR · SUNLIT"))
+	c.draw_string(W.FH, Vector2(40, 38), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, W.TEXT)
+	var sub := "outline only until EO resolves it · selected component marked" if view_target else "right-drag to orbit · wheel to zoom · C chase cam · Tab enemy view"
+	c.draw_string(W.FM, Vector2(40, 56), sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, W.MUTED)
+	var health: PackedFloat64Array = own["health"]
+	var fh: PackedFloat64Array = foe["health"]
+	if not view_target:
+		# target bracket: where the enemy is, clamped to the view edge when off screen
+		if cam.position.is_zero_approx(): return
+		var fp := foe_model.position
+		var p := cam.unproject_position(fp)
+		var behind := cam.is_position_behind(fp)
+		var r := Rect2(150, 110, 804 - 300, 684 - 230)
+		if behind:
+			p = Vector2(804, 684) - p
+		var clamped := not r.has_point(p) or behind
+		p = Vector2(clampf(p.x, r.position.x, r.end.x), clampf(p.y, r.position.y, r.end.y))
+		var col := W.HOT
+		for s: Vector2 in [Vector2(-1, -1), Vector2(1, -1), Vector2(1, 1), Vector2(-1, 1)]:
+			var corner := p + s * 20
+			c.draw_line(corner, corner - Vector2(s.x * 11, 0), col, 2)
+			c.draw_line(corner, corner - Vector2(0, s.y * 11), col, 2)
+		c.draw_colored_polygon(PackedVector2Array([p + Vector2(0, -6), p + Vector2(6, 0), p + Vector2(0, 6), p + Vector2(-6, 0)]), col)
+		W.text_c(c, W.FH, "TGT-1 · %s%s" % [_foe_name(), "  · OFF VIEW" if clamped else ""], p + Vector2(0, 38), 17, col)
+		W.text_c(c, W.FM, "%.1f km · closing %.2f km/s" % [battle.get_range_km(), battle.get_closing() / 1000.0], p + Vector2(0, 54), 11, W.MUTED)
+		# callout: our most damaged system
+		var worst := -1
+		for i in 6:
+			if i == 2 and int(own["gun"]) == 0: continue
+			if health[i] < 100 and (worst < 0 or health[i] < health[worst]): worst = i
+		if worst >= 0 and not cam.is_position_behind(own_model.position):
+			_callout(c, cam.unproject_position(own_model.position), "%s · %d%%" % [SYS_NAMES[worst].to_upper(), int(health[worst])], W.hp(health[worst]))
+	else:
+		var ts: int = own["target_sys"]
+		if not cam.is_position_behind(foe_model.position):
+			_callout(c, cam.unproject_position(foe_model.position), "%s · %s" % [SYS_NAMES[ts].to_upper(), ("%d%%" % int(fh[ts])) if known else "??"], W.PRI)
+		# resolved components panel
+		var pr := Rect2(40, 80, 210, 30 + 6 * 18)
+		c.draw_rect(pr, W.PANEL)
+		c.draw_rect(Rect2(pr.position + Vector2(0.5, 0.5), pr.size - Vector2(1, 1)), W.LINE, false, 1.0)
+		c.draw_string(W.FH, pr.position + Vector2(10, 20), "RESOLVED COMPONENTS", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, W.MUTED)
+		for i in 6:
+			var yy := pr.position.y + 40 + i * 18
+			var res := q > 0.25 + i * 0.05
+			var nm: String = str(SYS_NAMES[i]).to_upper()
+			c.draw_string(W.FM, Vector2(pr.position.x + 10, yy), nm, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, W.TEXT if res else W.FAINT)
+			var v := ("%d%%" % int(fh[i])) if res else "??"
+			var vw := W.FM.get_string_size(v, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+			c.draw_string(W.FM, Vector2(pr.end.x - 10 - vw, yy), v, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, W.hp(fh[i]) if res else W.FAINT)
+
+func _callout(c: Control, p: Vector2, label: String, col: Color) -> void:
+	var p2 := p + Vector2(-52, -54)
+	var x3 := p2.x - 122
+	if x3 < 30:
+		p2 = p + Vector2(52, -54)
+		x3 = p2.x + 122
+	c.draw_arc(p, 4, 0, TAU, 16, col, 1.5)
+	c.draw_line(p, p2, col, 1)
+	c.draw_line(p2, Vector2(x3, p2.y), col, 1)
+	var x := minf(x3, p2.x)
+	c.draw_string(W.FH, Vector2(x, p2.y - 6), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, col)
 
 # ------------------------------------------------------------------ menus
 
@@ -670,22 +1035,25 @@ func _overlay() -> Control:
 	layer.layer = 5
 	add_child(layer)
 	var c := ColorRect.new()
-	c.color = Color(0.016, 0.024, 0.035, 0.92)
+	c.color = Color(0.016, 0.024, 0.035, 0.94)
 	c.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var th := Theme.new()
+	th.default_font = W.FH
+	c.theme = th
 	layer.add_child(c)
 	return c
 
 func _build_menu() -> void:
 	menu = _overlay()
 	var v := VBoxContainer.new()
-	v.position = Vector2(520, 180)
-	v.size = Vector2(400, 560)
+	v.position = Vector2(520, 170)
+	v.size = Vector2(400, 580)
 	v.add_theme_constant_override("separation", 14)
 	menu.add_child(v)
 	var t := UI.label("TDC", 64, UI.PRI)
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(t)
-	var st := UI.label("Earth and Mars, 2300. One battle at the Moon.", 14, UI.MUTED)
+	var st := UI.label("Earth and Mars, 2300. One battle above Mars.", 15, UI.MUTED)
 	st.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(st)
 	v.add_child(UI.header("Choose your ship"))
@@ -694,11 +1062,13 @@ func _build_menu() -> void:
 	v.add_child(UI.button("Watch an AI battle", _watch_ai, UI.SEC, 400))
 	v.add_child(UI.header("Coming soon", UI.FAINT))
 	v.add_child(UI.locked("Ship designer", 400))
-	v.add_child(UI.locked("Fleet battles · missiles · drones", 400))
+	v.add_child(UI.locked("Fleet battles · missiles · EW · sensors", 400))
 	v.add_child(UI.button("Support development on Patreon", _open_patreon, UI.HOT, 400))
 	v.add_child(UI.button("Quit", func(): get_tree().quit(), UI.MUTED, 400))
-	var keys := UI.label("Right-drag: orbit camera · Wheel: zoom · Space: pause · , . : speed · Tab: own / target view · Esc: menu", 11, UI.FAINT)
+	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll · T nose on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · Right-drag orbit · Wheel zoom · Esc menu", 12, UI.FAINT)
 	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	keys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	keys.custom_minimum_size.x = 400
 	v.add_child(keys)
 
 func _show_menu() -> void:
@@ -739,17 +1109,12 @@ func _show_end() -> void:
 		"Enemy hull %d%%, crew %d of %d" % [int(float(foe["hull"]) * 100), foe["crew"], foe["crew_max"]],
 	]
 	for s in lines_out:
-		var l := UI.label(s, 15, UI.TEXT)
+		var l := UI.label(s, 16, UI.TEXT)
 		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		v.add_child(l)
 	v.add_child(UI.button("Fight again", func(): _start(ship_class), UI.PRI, 500))
 	v.add_child(UI.button("Main menu", func(): _show_menu(), UI.SEC, 500))
 	v.add_child(UI.button("Support development on Patreon", _open_patreon, UI.HOT, 500))
-
-func _on_throttle(val: float) -> void:
-	var sh: Dictionary = battle.get_ship(0)
-	if int(sh["burn"]) != 0:
-		battle.set_burn(int(sh["burn"]), val / 100.0)
 
 func _watch_ai() -> void:
 	_start(1)
@@ -769,10 +1134,23 @@ func _unhandled_input(e: InputEvent) -> void:
 	elif e is InputEventMouseMotion and dragging:
 		yaw -= e.relative.x * 0.006
 		pitch = clamp(pitch + e.relative.y * 0.006, -1.4, 1.4)
-	elif e is InputEventKey and e.pressed and state == "battle":
+	elif e is InputEventKey and e.pressed and not e.echo and state == "battle":
 		match e.keycode:
-			KEY_SPACE: battle.set_speed(0 if battle.get_speed() != 0 else 2)
+			KEY_SPACE: _toggle_free()
+			KEY_P: battle.set_speed(0 if battle.get_speed() != 0 else 2)
 			KEY_PERIOD: battle.set_speed(battle.get_speed() + 1)
 			KEY_COMMA: battle.set_speed(max(1, battle.get_speed() - 1))
 			KEY_TAB: view_target = not view_target
+			KEY_C: chase = not chase
+			KEY_Q, KEY_E: _helm("roll")
+			KEY_T: _helm("nose")
+			KEY_W: _helm(1)
+			KEY_S: _helm(2)
+			KEY_A: _helm(3)
+			KEY_D: _helm(4)
+			KEY_X: _helm(5)
+			KEY_I, KEY_ENTER: _toggle_ignite()
+			KEY_F1: _set_mode(0)
+			KEY_F2: _set_mode(1)
+			KEY_F3: _set_mode(2)
 			KEY_ESCAPE: _show_menu()

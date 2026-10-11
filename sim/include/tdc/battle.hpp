@@ -49,6 +49,7 @@ struct ShipClass {
     double drive_heat = 0;       // heat per second at full throttle
     double cool_extended = 0, cool_retracted = 0;  // heat removed per second
     int crew = 0;
+    double delta_v = 1800;       // m/s of manoeuvring the propellant allows
     std::array<double, kSys> repair_base{};        // seconds for a team to repair a badly damaged system
 };
 
@@ -80,6 +81,8 @@ struct Ship {
     bool radiators_extended = true;
     // orders
     bool weapons_free = true;
+    bool laser_armed = true, gun_armed = true;
+    double dv_left = 0;           // m/s left in the tanks
     FireMode fire_mode = FireMode::Auto;
     Sys target_sys = Sys::Laser;
     Facing facing = Facing::Nose;
@@ -137,6 +140,7 @@ public:
 
     // player orders (ship 0 is the player's)
     void set_weapons_free(int ship, bool free);
+    void set_armed(int ship, bool laser, bool on);
     void set_fire_mode(int ship, FireMode m, Sys target);
     void set_facing(int ship, Facing f);
     void set_burn(int ship, Burn b, double throttle);
