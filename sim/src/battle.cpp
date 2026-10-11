@@ -52,7 +52,9 @@ static ShipClass base_earth(const char* name) {
     c.accel = 0.30; c.turn_rate = 0.035;
     c.armor = {120, 40, 30}; c.structure = {160, 220, 160};
     c.placed = {Section::Aft, Section::Body, Section::Body, Section::Nose, Section::Body, Section::Body};
-    c.laser_dps = 2.5; c.laser_range = 150e3; c.laser_heat = 2.2;
+    // laser_dps: demo balance, set so each Earth ship wins about 65 % of AI-vs-AI battles (100-seed sweeps:
+    // Dagger 2.05 -> 67 %, Lance 1.55 -> 72 %; 2.5 and 1.4 gave 100 % and 41 %). Not a physical figure.
+    c.laser_dps = 2.05; c.laser_range = 150e3; c.laser_heat = 2.2;
     c.drive_heat = 0.6; c.cool_extended = 2.7; c.cool_retracted = 0.6;
     c.crew = 40;
     c.repair_base = {60, 45, 50, 40, 35, 70};
@@ -67,7 +69,7 @@ ShipClass lance_class() {
     c.gun = GunKind::Coilgun;
     c.gun_damage = 46; c.gun_reload = 18; c.gun_speed = 12e3; c.gun_range = 100e3; c.gun_heat = 9;
     c.ammo = 60;
-    c.laser_dps = 1.4;
+    c.laser_dps = 1.55;
     return c;
 }
 
