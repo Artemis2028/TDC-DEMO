@@ -6,6 +6,7 @@ const PATREON_URL := ""   # set before release
 const SPEED_NAMES := ["II", "½×", "1×", "2×", "5×", "10×", "CRZ"]
 const SYS_NAMES := ["Drive", "Laser", "Gun", "Sensors", "Radiators", "Crew"]
 const SYS_ABBR := ["DRV", "LSR", "GUN", "SNS", "RAD", "CRW"]
+const TURRET_POS := ["top R", "top L", "low R"]   # where each sits around the hull (45, 165, 290 deg)
 const PRESET_VERB := ["Disable", "Disarm", "Silence", "Blind", "Cook", "Kill"]
 const MARS_R := 3389.5e3
 const ALT := 650e3          # display orbit height, chosen so the planet's limb shows as an arc
@@ -123,6 +124,7 @@ func _ready() -> void:
 		_start(ship_class)
 		if args.has("--hold"): battle.set_weapons_free(false)
 		if args.has("--preset"): _set_mode(1)
+		if args.has("--broadside"): battle.set_facing(1)
 		while battle.get_time() < shot_at and battle.get_winner() < 0:
 			battle.advance(1.0)
 			_track_heat()
@@ -278,16 +280,16 @@ func _update_world(delta: float) -> void:
 	var focus: Vector2 = foe["pos"] if view_target else own["pos"]
 	own_model.position = _sim_to_world(own["pos"], focus)
 	foe_model.position = _sim_to_world(foe["pos"], focus)
-	if int(own["facing"]) == 1: roll_angle = wrapf(roll_angle + delta * 0.6 * battle_speed(), -PI, PI)
-	if int(foe["facing"]) == 1: foe_roll = wrapf(foe_roll + delta * 0.6 * battle_speed(), -PI, PI)
+	roll_angle = float(own["roll"])
+	foe_roll = float(foe["roll"])
 	own_model.rotation = Vector3(0, float(own["heading"]) - PI / 2, roll_angle)
 	foe_model.rotation = Vector3(0, float(foe["heading"]) - PI / 2, foe_roll)
 	own_model.view_mode = 1 if armor_view else 0
 	foe_model.view_mode = 1 if armor_view and view_target and battle.get_sensor_quality() > 0.5 else 0
 	own_model.show_state(own, delta)
 	foe_model.show_state(foe, delta)
-	own_model.aim(foe_model.global_position)
-	foe_model.aim(own_model.global_position)
+	own_model.aim(foe_model.global_position, own["turret_bears"])
+	foe_model.aim(own_model.global_position, foe["turret_bears"])
 	planet.position = Vector3(0, -(MARS_R + ALT), 0)
 	# Camera: orbit (or chase) the ship in view; the view is rolled a little so the planet's limb runs across the lower left.
 	var target_node: Node3D = foe_model if view_target else own_model
@@ -304,10 +306,11 @@ func _update_world(delta: float) -> void:
 	lines.clear_surfaces()
 	lines.surface_begin(Mesh.PRIMITIVE_LINES, line_mat)
 	var any := false
-	if own["laser_firing"]:
-		_seg(own_model.muzzle_position(), foe_model.position, Color(0.55, 0.85, 1.0, 0.9)); any = true
-	if foe["laser_firing"]:
-		_seg(foe_model.muzzle_position(), own_model.position, Color(1.0, 0.45, 0.25, 0.9)); any = true
+	for k in 3:
+		if (own["turret_firing"] as Array)[k]:
+			_seg(own_model.muzzle_position(k), foe_model.position, Color(0.55, 0.85, 1.0, 0.9)); any = true
+		if (foe["turret_firing"] as Array)[k]:
+			_seg(foe_model.muzzle_position(k), own_model.position, Color(1.0, 0.45, 0.25, 0.9)); any = true
 	for s in battle.get_shots():
 		var p := _sim_to_world(s["pos"], focus)
 		var dir := (foe_model.position - own_model.position).normalized() if int(s["shooter"]) == 0 else (own_model.position - foe_model.position).normalized()
@@ -470,28 +473,30 @@ func _build_left() -> void:
 	# armament
 	_add(W.Header.new("Armament", W.PRI, "CB · FLAG · CTR", 260), Vector2(x, y))
 	y += 31
-	for i in 4:
-		var row_y := y + i * 45
-		var arm := _btn("cap", "ARM", Vector2(x, row_y + 3), Vector2(44, 32))
+	# rows: 0 the spinal gun, 1-3 the laser turrets, 4 the missile cells (not in the demo)
+	for i in 5:
+		var row_y := y + i * 38
+		var arm := _btn("cap", "ARM", Vector2(x, row_y + 3), Vector2(44, 30))
 		var flag := W.Flag.new()
-		_add(flag, Vector2(x + 52, row_y + 9))
+		_add(flag, Vector2(x + 52, row_y + 8))
 		var n := W.Txt.new("", 15, W.TEXT, false, 130)
-		_add(n, Vector2(x + 80, row_y + 2))
+		_add(n, Vector2(x + 80, row_y))
 		var s := W.Txt.new("", 10, W.MUTED, true, 130)
-		_add(s, Vector2(x + 80, row_y + 22))
+		_add(s, Vector2(x + 80, row_y + 19))
 		var c := W.Screen.new("--", Vector2(46, 24), W.PRI, 16)
-		_add(c, Vector2(x + 214, row_y + 7))
+		_add(c, Vector2(x + 214, row_y + 6))
 		arm_rows.append([arm, flag, n, s, c])
 	(arm_rows[0][0] as W.Btn).pressed.connect(func(): battle.set_armed(false, not bool(battle.get_ship(0)["gun_armed"])))
-	(arm_rows[1][0] as W.Btn).pressed.connect(func(): battle.set_armed(true, not bool(battle.get_ship(0)["laser_armed"])))
-	for i in [2, 3]:
-		var row: Array = arm_rows[i]
-		(row[0] as W.Btn).locked = true
-		(row[0] as W.Btn).text = "SAFE"
-		(row[2] as W.Txt).set_text(["PD laser pair", "VLS ×12"][i - 2], W.FAINT)
-		(row[3] as W.Txt).set_text("not in demo", W.FAINT)
-		(row[4] as W.Screen).set_text("--", W.FAINT)
-	y += 4 * 45 + 8
+	for k in 3:
+		var tk := k
+		(arm_rows[1 + k][0] as W.Btn).pressed.connect(func(): battle.set_turret_armed(tk, not bool((battle.get_ship(0)["turret_armed"] as Array)[tk])))
+	var vls: Array = arm_rows[4]
+	(vls[0] as W.Btn).locked = true
+	(vls[0] as W.Btn).text = "SAFE"
+	(vls[2] as W.Txt).set_text("VLS ×12", W.FAINT)
+	(vls[3] as W.Txt).set_text("not in demo", W.FAINT)
+	(vls[4] as W.Screen).set_text("--", W.FAINT)
+	y += 5 * 38 + 6
 	# fire mode
 	_add(W.Header.new("Fire mode", W.PRI, "", 260), Vector2(x, y))
 	y += 31
@@ -798,20 +803,28 @@ func _update_hud() -> void:
 		(r0[3] as W.Txt).set_text(sub, W.HOT if gh <= 0 else W.MUTED)
 		(r0[4] as W.Screen).set_text("%02d" % int(own["ammo"]), W.PRI if armed else W.MUTED)
 		gb.queue_redraw()
-	var r1: Array = arm_rows[1]
-	var la: bool = own["laser_armed"]
-	(r1[0] as W.Btn).set_state(la)
-	(r1[0] as W.Btn).set_text("ARM" if la else "SAFE")
-	(r1[1] as W.Flag).set_on(la)
-	var lh := health[1]
-	(r1[2] as W.Txt).set_text("Laser turret", (W.PRI if own["laser_firing"] else (W.TEXT if la else W.MUTED)) if lh > 0 else W.HOT)
-	var ls := "SAFE"
-	if lh <= 0: ls = "DESTROYED"
-	elif bool(own["overheated"]): ls = "LOCKOUT · HEAT"
-	elif own["laser_firing"]: ls = "FIRING ▸ %s" % SYS_ABBR[int(own["target_sys"])]
-	elif la: ls = "RDY · %d%% HP" % int(lh)
-	(r1[3] as W.Txt).set_text(ls, W.HOT if lh <= 0 or bool(own["overheated"]) else W.MUTED)
-	(r1[4] as W.Screen).set_text("--", W.PRI if la else W.MUTED)
+	# laser turrets: each its own row; the counter is the turret's condition
+	var thp: PackedFloat64Array = own["turret_hp"]
+	var tarm: Array = own["turret_armed"]
+	var tfire: Array = own["turret_firing"]
+	var tbear: Array = own["turret_bears"]
+	for k in 3:
+		var row: Array = arm_rows[1 + k]
+		var armed_k: bool = tarm[k]
+		var hp_k: float = thp[k]
+		(row[0] as W.Btn).set_state(armed_k)
+		(row[0] as W.Btn).set_text("ARM" if armed_k else "SAFE")
+		(row[1] as W.Flag).set_on(armed_k)
+		var col := W.HOT if hp_k <= 0 else (W.PRI if tfire[k] else (W.TEXT if armed_k else W.MUTED))
+		(row[2] as W.Txt).set_text("Laser %d · %s" % [k + 1, TURRET_POS[k]], col)
+		var st := "SAFE"
+		if hp_k <= 0: st = "DESTROYED"
+		elif bool(own["overheated"]) and armed_k: st = "LOCKOUT · HEAT"
+		elif tfire[k]: st = "FIRING ▸ %s" % SYS_ABBR[int(own["target_sys"])]
+		elif armed_k and not tbear[k]: st = "NO ARC · hull blocks"
+		elif armed_k: st = "RDY · ⅓ power"
+		(row[3] as W.Txt).set_text(st, W.HOT if hp_k <= 0 or st.begins_with("LOCKOUT") else W.MUTED)
+		(row[4] as W.Screen).set_text("%d" % int(hp_k), W.hp(hp_k) if hp_k > 0 else W.HOT)
 
 	# fire mode
 	var mode: int = own["fire_mode"]
@@ -931,19 +944,27 @@ func _update_hud() -> void:
 	var pl: Array = []
 	dc_line_sys.clear()
 	var busy := {}
+	# The laser is judged by its worst turret: that is the one a team works on.
+	var worst_t := 0
+	for k in 3:
+		if thp[k] < thp[worst_t]: worst_t = k
+	var need := health.duplicate()
+	need[1] = thp[worst_t]
+	var dc_name := SYS_NAMES.duplicate()
+	dc_name[1] = "Laser T%d" % (worst_t + 1)
 	for r in reps:
 		busy[int(r["sys"])] = true
-		pl.append(["☐", "REPAIR %s" % SYS_NAMES[int(r["sys"])].to_upper(), "%d s" % int(ceil(float(r["left"]))), W.INK])
+		pl.append(["☐", "REPAIR %s" % str(dc_name[int(r["sys"])]).to_upper(), "%d s" % int(ceil(float(r["left"]))), W.INK])
 		dc_line_sys.append(-1)
 	var dmg: Array = []
 	for i in 6:
 		if i == 2 and gun == 0: continue
-		if health[i] < 100 and not busy.has(i): dmg.append(i)
-	dmg.sort_custom(func(a, b): return health[a] < health[b])
+		if need[i] < 100 and not busy.has(i): dmg.append(i)
+	dmg.sort_custom(func(a, b): return need[a] < need[b])
 	for i in dmg:
 		if pl.size() >= 5: break
-		var hv := health[i]
-		pl.append(["⚠" if hv < 45 else "▸", "%s %d%%  ▸ FIX" % [SYS_NAMES[i].to_upper(), int(hv)], "", W.INK_HOT if hv < 45 else W.INK])
+		var hv: float = need[i]
+		pl.append(["⚠" if hv < 45 else "▸", "%s %d%%  ▸ FIX" % [str(dc_name[i]).to_upper(), int(hv)], "", W.INK_HOT if hv < 45 else W.INK])
 		dc_line_sys.append(i)
 	if pl.is_empty():
 		pl.append(["☒", "ALL SYSTEMS NOMINAL", "", W.INK])
