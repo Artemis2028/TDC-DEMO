@@ -3,6 +3,8 @@ project(tdc_demo CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# godot-cpp links the static C runtime on MSVC; everything else must match or the DLL fails to link.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 add_library(tdc_sim STATIC sim/src/battle.cpp)
 target_include_directories(tdc_sim PUBLIC sim/include)
