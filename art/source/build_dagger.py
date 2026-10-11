@@ -19,6 +19,7 @@ hot=collection('05 | four drive radiator wings')
 service=collection('06 | service and crew radiators')
 detail=collection('07 | missile bays and surface hardware')
 stage=collection('08 | cameras and lighting')
+oms=collection('09 | OMS maneuvering thruster clusters')
 
 def mat(name,color,metal=0,rough=.45):
     m=bpy.data.materials.new(name); m.diffuse_color=(*color,1); m.use_nodes=True
@@ -71,7 +72,7 @@ def parent(o,p):
 
 # X is the thrust axis; bow -90 m, nozzle exit +90 m. Dimensions in meters.
 ship=empty('DAGGER | 2300 Earth destroyer', (0,0,0),hull)
-ship['length_m']=187.7;ship['max_hull_diameter_m']=18.
+ship['length_m']=180.;ship['max_hull_diameter_m']=18.
 ship['loaded_mass_t']=2500.;ship['dry_mass_t']=1000.
 ship['jet_power_GW']=10.;ship['shared_laser_MW']=10.
 ship['status']='Concept blockout; geometry and material appearances are not validated equipment engineering.'
@@ -86,48 +87,120 @@ for name,x,length,r,c in sections:
     for theta in range(0,360,30):
         t=math.radians(theta)
         beam(name+' axial seam',(x-length/2+.6,(r+.025)*math.cos(t),(r+.025)*math.sin(t)),(x+length/2-.6,(r+.025)*math.cos(t),(r+.025)*math.sin(t)),.025,dark,c)
-cylinder('Tapered nose turret foundation',(-84,0,0),7,6,ivory,crew,axis=(-1,0,0),r2=5.4)
+cylinder('Armored tapered bow',(-85,0,0),4.6,10,ivory,crew,axis=(1,0,0),r2=7)
+sphere('Rounded armored bow cap',(-89,0,0),4.6,ivory,crew,scale=(.22,1,1))
 cylinder('Shadow shield protective collar',(-58,0,0),8.1,3,dark,crew)
 for x in [-61,-54,-27,3,33,46]:
     cylinder('Identification / caution band',(x,0,0),8.12 if x< -50 else (9.04 if x<40 else 8.65),.22,gold,hull)
 
-# Enlarged nose director: a single 12 m housing with a provisional 5 m aperture.
-root=empty('Nose beam director | gimbal assembly',(-87,0,0),optics)
-root['clear_aperture_m']=5.;root['housing_diameter_m']=12.;root['source_MW']=10.
-root['status']='Larger optical assembly; mass, pointing and optical performance require rebudgeting.'
-mount=cylinder('Nose director azimuth bearing',(-87,0,0),5.6,1.6,steel,optics);parent(mount,root)
-ring=torus('Nose bearing protective collar',(-87.8,0,0),5.45,.32,ivory,optics);parent(ring,root)
-# Open-front spherical shell, rather than hiding the aperture under a solid sphere.
-verts=[];faces=[];steps=28;segments=64;radius=6.;cx=-92.
-for row in range(steps+1):
-    polar=.55+(math.pi-.55)*row/steps
-    for j in range(segments):
-        phi=2*math.pi*j/segments
-        verts.append((cx-radius*math.cos(polar),radius*math.sin(polar)*math.cos(phi),radius*math.sin(polar)*math.sin(phi)))
-for row in range(steps):
-    for j in range(segments):
-        n=(j+1)%segments
-        faces.append((row*segments+j,row*segments+n,(row+1)*segments+n,(row+1)*segments+j))
-mesh=bpy.data.meshes.new('Open spherical nose director shell');mesh.from_pydata(verts,[],faces);mesh.update()
-ball=bpy.data.objects.new('12 m rounded nose turret housing',mesh);optics.objects.link(ball);ball.data.materials.append(ivory)
-smooth(ball);parent(ball,root)
-for sign in [-1,1]:
-    arm=beam('Nose director gimbal cradle',(-86.8,sign*4.8,0),(-92,sign*6.25,0),.55,steel,optics);parent(arm,root)
-    tr=cylinder('Nose director elevation trunnion',(-92,sign*6.1,0),1.3,1.,ivory,optics,axis=(0,1,0));parent(tr,root)
-    cap=cylinder('Trunnion bearing cover',(-92,sign*6.65,0),.88,.12,steel,optics,axis=(0,1,0));parent(cap,root)
-rim=torus('Large aperture armored rim',(-97.12,0,0),3.10,.30,steel,optics);parent(rim,root)
-inner=torus('Optical aperture inner bezel',(-97.17,0,0),2.60,.12,dark,optics);parent(inner,root)
-eye=cylinder('5 m nose optical aperture',(-97.08,0,0),2.5,.08,glass,optics);parent(eye,root)
-# Segmented protective bezel leaves the optical opening unobstructed.
-for j in range(12):
-    phi=2*math.pi*j/12
-    o=box('Aperture rim segment',(-97.20,3.18*math.cos(phi),3.18*math.sin(phi)),(.24,.45,.35),light,optics,.04)
-    o.rotation_euler.x=phi;parent(o,root)
+# Two side-mounted 12 m director housings with 5 m clear apertures.
+# Shared source remains 10 MW total, not 10 MW per turret.
+for side in [-1,1]:
+    axis=Vector((0,side,0)); u=Vector((1,0,0)); v=u.cross(axis)
+    center=Vector((-65,side*13.0,0))
+    root=empty(('Port' if side<0 else 'Starboard')+' beam director | gimbal assembly',center,optics)
+    root['clear_aperture_m']=5.;root['housing_diameter_m']=12.
+    root['shared_source_MW']=10.;root['status']='Concept side director; optics and mount loads require rebudgeting.'
+    def part(o):parent(o,root);return o
+    part(cylinder('Side director hull bearing',(-65,side*7.4,0),4.8,1.2,steel,optics,axis=axis))
+    part(torus('Side director protective bearing ring',(-65,side*8.1,0),4.7,.25,ivory,optics,axis=axis))
+    # Open spherical shell: aperture faces outward, shell normals point outward.
+    verts=[];faces=[];steps=28;segments=64
+    for row in range(steps+1):
+        polar=.55+(math.pi-.55)*row/steps
+        for j in range(segments):
+            phi=2*math.pi*j/segments
+            verts.append(center+6*(axis*math.cos(polar)+math.sin(polar)*(u*math.cos(phi)+v*math.sin(phi))))
+    for row in range(steps):
+        for j in range(segments):
+            n=(j+1)%segments
+            faces.append((row*segments+j,row*segments+n,(row+1)*segments+n,(row+1)*segments+j))
+    mesh=bpy.data.meshes.new('Open side turret shell');mesh.from_pydata(verts,[],faces);mesh.update()
+    ball=bpy.data.objects.new('12 m side laser housing',mesh);optics.objects.link(ball);ball.data.materials.append(ivory)
+    if mesh.polygons[0].normal.dot(mesh.polygons[0].center-center)<0:
+        for f in mesh.polygons:f.flip()
+        mesh.update()
+    smooth(ball);part(ball)
+    for sign in [-1,1]:
+        part(beam('Side director gimbal cradle',(-65,side*8,sign*4.8),center+Vector((0,0,sign*6.25)),.55,steel,optics))
+        part(cylinder('Side director elevation trunnion',center+Vector((0,0,sign*6.1)),1.3,1,ivory,optics,axis=(0,0,1)))
+        part(cylinder('Side trunnion cover',center+Vector((0,0,sign*6.65)),.88,.12,steel,optics,axis=(0,0,1)))
+    part(torus('Side laser armored aperture rim',center+axis*5.12,3.10,.30,steel,optics,axis=axis))
+    part(torus('Side optical inner bezel',center+axis*5.17,2.60,.12,dark,optics,axis=axis))
+    part(cylinder('5 m side optical aperture',center+axis*5.08,2.5,.08,glass,optics,axis=axis))
+
+# Amidships OMS: recessed steerable bells in hemispherical protective fairings.
+# Two separated stations retain pitch/yaw moment arms; diagonal positions clear wings.
+def thruster_bell(name,base,direction,root):
+    d=Vector(direction).normalized();base=Vector(base)
+    q=d.to_track_quat('Z','Y');verts=[];faces=[];segments=32
+    # Outer and inner walls joined at mouth: open nozzle, recessed throat.
+    profile=[(0,.22),(.2,.27),(.55,.40),(1.05,.64),(1.5,.88),(1.5,.80),(1.05,.56),(.55,.32),(.2,.19)]
+    for z,r in profile:
+        for j in range(segments):
+            t=2*math.pi*j/segments
+            verts.append(base+q@Vector((r*math.cos(t),r*math.sin(t),z)))
+    for i in range(len(profile)-1):
+        for j in range(segments):
+            n=(j+1)%segments;faces.append((i*segments+j,i*segments+n,(i+1)*segments+n,(i+1)*segments+j))
+    mesh=bpy.data.meshes.new(name);mesh.from_pydata(verts,[],faces);mesh.update()
+    o=bpy.data.objects.new(name,mesh);oms.objects.link(o);o.data.materials.append(steel);smooth(o);parent(o,root)
+    o['exhaust_direction']=list(d);o['throat_position_m']=list(base)
+    o['thrust_N']='Unassigned; visual concept only'
+    parent(cylinder('OMS recessed dark throat',base+d*.12,.18,.04,dark,oms,axis=d,vertices=32),root)
+    for z,r in [( .55,.4),(1.05,.64),(1.48,.86)]:
+        parent(torus('OMS nozzle reinforcement ring',base+d*z,r,.045,copper,oms,axis=d),root)
+for x in [-22.,8.]:
+    for index in range(4):
+        t=math.pi/4+index*math.pi/2
+        radial=Vector((0,math.cos(t),math.sin(t))); tangent=Vector((0,-math.sin(t),math.cos(t)))
+        axial=Vector((1,0,0));center=Vector((x,0,0))+radial*9.05
+        root=empty(('Forward amidships' if x<0 else 'Aft amidships')+' OMS pod '+str(index+1),center,oms)
+        root['nozzle_count']=1;root['fairing_radius_m']=2.5;root['gimbal_cone_deg']=10.
+        root['radial_axis']=list(radial);root['axial_station_m']=x
+        root['status']='Concept pod; 10 degree gimbal envelope is provisional; plume heating and thrust unassigned.'
+        def podpart(o):parent(o,root);return o
+        podpart(torus('OMS flush mounting flange',center,2.48,.10,steel,oms,axis=radial))
+        # Half-ball fairing with an open circular recess at its outward pole.
+        verts=[];faces=[];steps=20;segments=64
+        for row in range(steps+1):
+            polar=.5+(math.pi/2-.5)*row/steps
+            for j in range(segments):
+                phi=2*math.pi*j/segments
+                verts.append(center+2.5*(radial*math.cos(polar)+math.sin(polar)*(axial*math.cos(phi)+tangent*math.sin(phi))))
+        for row in range(steps):
+            for j in range(segments):
+                n=(j+1)%segments
+                faces.append((row*segments+j,row*segments+n,(row+1)*segments+n,(row+1)*segments+j))
+        mesh=bpy.data.meshes.new('OMS open hemispherical fairing');mesh.from_pydata(verts,[],faces);mesh.update()
+        o=bpy.data.objects.new('OMS half-ball fairing',mesh);oms.objects.link(o);o.data.materials.append(ivory)
+        if mesh.polygons[0].normal.dot(mesh.polygons[0].center-center)<0:
+            for face in mesh.polygons:face.flip()
+            mesh.update()
+        smooth(o);podpart(o)
+        podpart(torus('OMS recessed aperture lip',center+radial*(2.5*math.cos(.5)),2.5*math.sin(.5),.075,steel,oms,axis=radial))
+        podpart(cylinder('OMS shadowed gimbal cavity',center+radial*.65,1.12,.06,dark,oms,axis=radial))
+        pivot=center+radial*.8
+        gimbal=empty('OMS steerable nozzle | local X-Y tilt',pivot,oms)
+        gimbal.rotation_euler=radial.to_track_quat('Z','Y').to_euler();parent(gimbal,root)
+        gimbal.empty_display_type='ARROWS';gimbal.empty_display_size=1.3
+        gimbal['control']='Rotate local X/Y within a combined 10 degree cone. Local Z is nominal exhaust axis.'
+        gimbal['gimbal_cone_deg']=10.
+        thruster_bell('OMS gimballed recessed nozzle',pivot,radial,gimbal)
+        for sign in [-1,1]:
+            podpart(cylinder('OMS gimbal trunnion',pivot+axial*(sign*.54),.18,.20,steel,oms,axis=axial,vertices=32))
+        # Small seam ring keeps the protective surface restrained.
+        podpart(torus('OMS fairing service seam',center+radial*.45,math.sqrt(2.5**2-.45**2),.015,dark,oms,axis=radial))
+ship['oms_pod_count']=8;ship['oms_nozzle_count']=8
+ship['oms_stations_m']='-22, +8 along hull X; 30 m separation'
+
+ship['laser_director_count']=2
+
 for t in [0,2.094,4.189]:
     axis=(-.5,.866*math.cos(t),.866*math.sin(t));loc=(-80,6.8*math.cos(t),6.8*math.sin(t))
     cylinder('Shoulder sensor / tightbeam head',loc,.48,.6,dark,optics,axis=axis)
     sphere('Sensor optical face',loc,.38,glass,optics)
-camera_note='Nose turret replaces both former small side beam directors.'
+camera_note='Two side directors; armored bow; eight amidships hemispherical OMS pods.'
 
 # Missile door dimensions indicate bays only; magazine capacity is unassigned.
 for x in [-13,-5,3,11]:
@@ -199,7 +272,7 @@ for t in [j*math.pi/8 for j in range(16)]:
     beam('Nozzle cage rib',(80,4.8*math.cos(t),4.8*math.sin(t)),(89.6,6*math.cos(t),6*math.sin(t)),.11,steel,drive)
 
 # Parent assembly-level objects to the ship root without altering placements.
-for c in [hull,crew,optics,drive,hot,service,detail]:
+for c in [hull,crew,optics,drive,hot,service,detail,oms]:
     for o in list(c.objects):
         if o!=ship and o.parent is None:parent(o,ship)
 
@@ -209,7 +282,9 @@ def camera(name,loc,target,scale):
     data.type='ORTHO';data.ortho_scale=scale;data.clip_end=2000;return o
 hero=camera('Hero three-quarter',(-170,-260,170),(0,0,0),330)
 camera('True side — X axis horizontal',(0,-300,0),(0,0,0),300)
-camera('Nose turret close-up',(-125,-42,24),(-89,0,0),42)
+camera('Side laser and forward OMS close-up',(-102,-75,35),(-68,-7,0),65)
+camera('Amidships OMS close-up',(-38,-54,38),(-22,-7,6),27)
+camera('Amidships OMS layout',(-35,-85,60),(-5,0,0),90)
 camera('Bow axial inspection',(-300,0,0),(0,0,0),300)
 def area(name,loc,power,size,color):
     data=bpy.data.lights.new(name,'AREA');data.energy=power;data.shape='DISK';data.size=size;data.color=color
@@ -239,4 +314,4 @@ bpy.ops.object.select_all(action='DESELECT')
 ship.select_set(True);bpy.context.view_layer.objects.active=ship
 bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT,'Dagger_Earth_Destroyer.blend'))
 bpy.ops.render.render(write_still=True)
-print('DAGGER_COMPLETE',len(bpy.data.objects),'objects; drive radiator planform',4*L*W)
+print('DAGGER_V3_COMPLETE',len(bpy.data.objects),'objects; drive radiator planform',4*L*W)

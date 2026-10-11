@@ -206,12 +206,13 @@ void Battle::set_target_turret(int ship, int turret) {
 
 bool Battle::turret_bears(int ship, int turret, int target) const {
     // The target lies in the battle plane. Seen from the ship it is ahead or astern by cos(rel) and off to the left or
-    // right; a turret sees it if it is near the axis (the beam clears the hull lengthwise) or if the side it is on lies
-    // within the turret's arc. Rolling the ship turns every turret's outward direction by the roll angle.
+    // right; no turret sees it close astern (radiators and drive in the way), every turret sees it close ahead (the
+    // beam clears the bow lengthwise), and otherwise a turret sees it if the side it is on lies within its arc. Rolling the ship turns every turret's outward direction by the roll angle.
     const Ship& s = ships_[ship];
     const Ship& t = ships_[target];
     double rel = wrap(std::atan2(t.pos.y - s.pos.y, t.pos.x - s.pos.x) - s.heading);
-    if (std::fabs(std::cos(rel)) >= std::cos(kAxialClear)) return true;
+    if (std::cos(rel) <= -std::cos(kAftBlind)) return false;
+    if (std::cos(rel) >= std::cos(kAxialClear)) return true;
     double side = std::sin(rel) > 0 ? kPi : 0.0;                 // left of the ship is 180 deg around the axis
     double out = kTurretAngle[static_cast<std::size_t>(turret)] + s.roll;
     return std::cos(out - side) >= std::cos(kTurretHalfArc);

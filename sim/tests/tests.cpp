@@ -153,18 +153,21 @@ static Battle placed(double rel_bearing_deg, double roll = 0) {
 }
 static int bearing_count(const Battle& b) { int n = 0; for (int k = 0; k < kTurrets; ++k) n += b.turret_bears(0, k, 1); return n; }
 
-TEST(turrets_all_bear_near_the_axis) {
-    // Within 10 deg of the nose or the stern each turret's beam runs past the hull lengthwise: all three bear.
-    for (double d : {0.0, 9.0, -9.0, 175.0, 180.0})
+TEST(turrets_all_bear_ahead_none_astern) {
+    // Within 10 deg of the nose each turret's beam runs past the bow: all three bear. Within 25 deg of the stern the
+    // radiator panels and the drive are in the way: none bear.
+    for (double d : {0.0, 9.0, -9.0})
         CHECK(bearing_count(placed(d)) == 3);
+    for (double d : {180.0, 160.0, -160.0})
+        CHECK(bearing_count(placed(d)) == 0);
 }
 
 TEST(turrets_split_on_the_beam) {
-    // Broadside with no roll: turrets at 45 and 290 deg face right (within 105 deg of 0 deg), the one at 165 faces left
-    // (290 deg is 110 deg from the left side, just outside its arc).
+    // Broadside with no roll: the starboard housing (0 deg) bears right, the port one (180) left, and the dorsal one
+    // (90 deg, 90 from either side, inside its 105 deg arc) bears both ways: two turrets on either beam.
     Battle right = placed(-90), left = placed(90);
     CHECK(right.turret_bears(0, 0, 1) && !right.turret_bears(0, 1, 1) && right.turret_bears(0, 2, 1));
-    CHECK(!left.turret_bears(0, 0, 1) && left.turret_bears(0, 1, 1) && !left.turret_bears(0, 2, 1));
+    CHECK(!left.turret_bears(0, 0, 1) && left.turret_bears(0, 1, 1) && left.turret_bears(0, 2, 1));
 }
 
 TEST(rolling_brings_each_turret_round) {
@@ -180,7 +183,7 @@ TEST(rolling_brings_each_turret_round) {
 
 TEST(laser_power_is_shared_by_turrets) {
     // Nose on, all three turrets fire and together equal one laser_dps beam; on the beam, the bearing turrets give
-    // their share: one of three on the left at no roll.
+    // their share: two of three on the left at no roll (port and dorsal).
     for (double bearing : {0.0, 90.0}) {
         Battle b = placed(bearing);
         auto& foe = const_cast<Ship&>(b.ships()[1]);
@@ -189,11 +192,11 @@ TEST(laser_power_is_shared_by_turrets) {
         double q = b.sensor_quality(0, 1);
         double before = foe.armor[0];
         b.step();
-        double expect = b.ships()[0].cls.laser_dps * (bearing == 0 ? 1.0 : 1.0 / 3) * (0.5 + 0.5 * q) * Battle::kDt;
+        double expect = b.ships()[0].cls.laser_dps * (bearing == 0 ? 1.0 : 2.0 / 3) * (0.5 + 0.5 * q) * Battle::kDt;
         CHECK(std::fabs((before - b.ships()[1].armor[0]) - expect) < 1e-9);
         int firing = 0;
         for (bool f : b.ships()[0].turret_firing) firing += f;
-        CHECK(firing == (bearing == 0 ? 3 : 1));
+        CHECK(firing == (bearing == 0 ? 3 : 2));
     }
 }
 

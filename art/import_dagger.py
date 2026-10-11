@@ -6,9 +6,10 @@ The concept model keeps its hull, tanks, seams, missile doors, nose housing, rad
   * turns it to the game's axes (nose along +Y in Blender, which the glTF exporter makes -Z in Godot),
   * removes cameras and lights,
   * regroups each radiator wing under a RadPivot node whose local +X points outward, so the game can fold it,
-  * keeps the nose housing as the sensor/optics head (no laser on the nose: it takes the enemy's fire),
-  * adds the game's three laser barbettes amidships, the OMS blisters, the spinal coilgun and the named reference
-    points the game looks for (see build_ships.py for the list),
+  * makes the two side laser housings turrets 0 (starboard) and 1 (port) and adds a copy on top as turret 2,
+    matching the sim's turret angles (0, 180, 90 degrees),
+  * names the eight OMS pod nozzles, adds the coilgun and the reference points the game looks for
+    (see build_ships.py for the list),
   * prefixes hull meshes N_/B_/A_ by section and joins small parts by material so the game draws a few dozen
     meshes instead of ~500,
   * exports game/models/earth.glb (and art/earth.blend with --blend).
@@ -26,7 +27,7 @@ from mathutils import Matrix, Vector  # noqa: E402
 import build_ships as B  # noqa: E402
 
 SRC = os.path.join(HERE, "source", "Dagger_Earth_Destroyer.blend")
-LENGTH = 187.7               # the concept's overall length; ShipModel uses the same number
+LENGTH = 180.0               # the concept's overall length; ShipModel uses the same number
 
 
 def ours(x_concept):
@@ -97,71 +98,78 @@ def main(save_blend):
         ri += 1
 
     # --- the game's parts, in game axes (nose +Y, +X right, +Z top)
-    m_hull = bpy.data.materials["Pale aerospace protective panels"]     # the concept's own hull and marking paints
-    m_gold = bpy.data.materials["Muted caution ochre"]
-    m_dome = B.material("B_dome", (0.80, 0.82, 0.84), 0.25, 0.4)
-    m_dark = B.material("emitter", (0.10, 0.11, 0.12), 0.4, 0.7)
-    m_lens = B.material("lens", (0.35, 0.65, 1.0), 0.05, 0.0, emit=(0.35, 0.65, 1.0), emit_strength=4.0)
-    m_noz = B.material("nozzle", (0.12, 0.12, 0.13), 0.4, 0.8)
     m_gun = B.material("B_gun", (0.60, 0.53, 0.40), 0.35, 0.7)
 
-    # laser barbettes on the central tank, clear of the missile doors and radiator roots
-    u = 5.0
-    y0, hr = ours(-20), 9.0
-    for k, a in enumerate(B.TURRET_ANGLES):
-        out, _, _ = B.frame(y0, a)
-        foot, bar_h = 0.62 * u, 0.34 * u
-        core = 0.40 / 0.62
+    # laser turrets: the concept's starboard and port housings, plus a copy of the starboard one turned to the top.
+    # Each rotating part (shell, rim, bezel, aperture) goes under a Turret pivot whose local +Y is the aperture's
+    # outward direction; the bearing, cradle and trunnions stay fixed to the hull.
+    def assembly(name):
+        r = bpy.data.objects[name]
+        return r, [r] + descendants(r)
 
-        def barbette(s, core=core, bar_h=bar_h):
-            if s <= core:
-                return bar_h
-            t = (s - core) / (1 - core)
-            return bar_h * (1 - t) ** 2 * (1 + 2 * t)
-        B.hull_patch(f"B_barbette{k}", y0, a, hr, barbette, foot, m_hull, rings=48, seg=64, band=(0.69, 0.76, m_gold))
-        piv = B.empty(f"Turret{k}", out * (hr + bar_h) + Vector((0, y0, 0)))
-        B.sphere(f"B_dome{k}", (0, 0, 0), 0.3 * u, m_dome, piv, seg=64, rings=32)
-        B.revolve(f"B_emitter{k}", B.fillet([(0.12 * u, 0.0), (0.12 * u, 0.14 * u), (0.48 * u, 0.14 * u), (0.48 * u, 0.11 * u),
-                                              (0.4 * u, 0.095 * u)], 0.03 * u, 4), m_dark, piv, seg=40)
-        B.revolve(f"Lens{k}", [(0.44 * u, 0.0), (0.44 * u, 0.095 * u)], m_lens, piv, seg=40)
-        B.empty(f"Muzzle{k}", (0, 0.48 * u, 0), piv)
+    star_root, star = assembly("Starboard beam director | gimbal assembly")
+    port_root, port = assembly("Port beam director | gimbal assembly")
+    turn = Matrix.Rotation(-math.pi / 2, 4, "Y")       # +X (starboard) to +Z (top), about the ship's axis
+    dors = []
+    for ob in star:
+        c = ob.copy()
+        if ob.data is not None:
+            c.data = ob.data.copy()
+        col.objects.link(c)
+        dors.append(c)
+    remap = {o: c for o, c in zip(star, dors)}
+    for o, c in zip(star, dors):
+        mw = turn @ o.matrix_world
+        c.parent = remap.get(o.parent)
+        c.matrix_world = mw
+    bpy.context.view_layer.update()
+    rotating = ("housing", "aperture rim", "inner bezel", "optical aperture")
+    for k, (root_ob, parts) in enumerate([(star_root, star), (port_root, port), (dors[0], dors)]):
+        centre = root_ob.matrix_world.translation.copy()
+        out = Vector((centre.x, 0, centre.z)).normalized()
+        along = Vector((0, 1, 0))
+        m = Matrix((out.cross(along), out, along)).transposed().to_4x4()
+        m.translation = centre
+        piv = new_empty(f"Turret{k}", m)
+        for ob in parts:
+            if ob.type == "MESH" and any(w in ob.name for w in rotating):
+                reparent_keep(ob, piv)
+                if "housing" in ob.name:
+                    ob.name = f"B_dome{k}"
+                elif "optical aperture" in ob.name:
+                    ob.name = f"Lens{k}"
+        muz = new_empty(f"Muzzle{k}", Matrix.Translation(centre + out * 5.3))
+        reparent_keep(muz, piv)
 
-    # OMS blisters: forward on the crew shell, aft on the systems transition (between the service hatches)
-    for (xc, rad, tag) in [(-70, 7.0, "F"), (40, 8.6, "A")]:
-        yc = ours(xc)
-        sec = "N" if tag == "F" else "B"
-        for k in range(4):
-            a = math.pi / 4 + k * math.pi / 2
-            out, around, along = B.frame(yc, a)
-            foot, hb, stretch = 2.2, 1.0, 1.8
-            B.hull_patch(f"{sec}_oms{tag}{k}", yc, a, rad, lambda s, hb=hb: hb * (1 - s * s) ** 1.6, foot, m_hull,
-                         rings=28, seg=56, stretch=stretch)
-            top = out * (rad + hb) + Vector((0, yc, 0))
-            B.cylinder(f"{sec}_port", top - out * 0.3, top + out * 0.05, 0.45, m_noz, seg=24)
-            axd = along if tag == "F" else -along
-            endp = out * (rad + hb * 0.55) + Vector((0, yc, 0)) + axd * foot * stretch * 0.55
-            B.cylinder(f"{sec}_port", endp - axd * 0.25, endp + axd * 0.05, 0.35, m_noz, seg=24)
-            B.empty(f"OMS_{tag}{k}", top + out * 0.05)
-            B.empty(f"OMSAX_{tag}{k}", endp + axd * 0.05)
+    # OMS: the concept's eight half-ball pods, one gimballed bell each. Name each bell exit for the game's jets;
+    # the bells point outward, so the same exit serves for fore/aft burns (the game cants the jet).
+    for ob in list(bpy.data.objects):
+        if ob.type == "EMPTY" and ob.name.startswith("OMS steerable nozzle"):
+            p = ob.matrix_world.translation.copy()
+            out = Vector((p.x, 0, p.z)).normalized()
+            tag = "F" if p.y > 0 else "A"
+            k = round((math.degrees(math.atan2(out.z, out.x)) - 45) / 90) % 4
+            exitp = p + out * 1.5
+            B.empty(f"OMS_{tag}{k}", exitp)
+            B.empty(f"OMSAX_{tag}{k}", exitp)
 
-    # spinal coilgun along the lower left (the belly and top carry radiator panels at the crew section)
-    ga = math.radians(225)
+    # spinal coilgun along the lower left, between the OMS pods and the belly radiator
+    ga = math.radians(247.5)
     gout = Vector((math.cos(ga), 0, math.sin(ga)))
-    gr = 11.5
+    gr = 13.0
     coil = B.empty("Gun_Coil", (0, 0, 0))
-    B.cylinder("B_coil_barrel", gout * gr + Vector((0, ours(-62), 0)), gout * gr + Vector((0, ours(8), 0)), 0.55, m_gun, coil, seg=32)
-    x = -60.0
-    while x < 6:
+    B.cylinder("B_coil_barrel", gout * gr + Vector((0, ours(-58), 0)), gout * gr + Vector((0, ours(2), 0)), 0.55, m_gun, coil, seg=32)
+    x = -56.0
+    while x < 0:
         B.torus("B_coil_stage", gout * gr + Vector((0, ours(x), 0)), (0, 1, 0), 1.0, 0.22, m_gun, coil, seg=40, seg2=10)
         x += 2.6
-    for xp in (-55, -35, -15, 3):
-        hull_r = 9.0 if xp > -55 else 8.1
-        B.cylinder("B_pylon", gout * (hull_r - 0.3) + Vector((0, ours(xp), 0)), gout * gr + Vector((0, ours(xp), 0)), 0.28, m_gun, coil, seg=12)
+    for xp in (-50, -35, -10, 0):
+        B.cylinder("B_pylon", gout * 8.7 + Vector((0, ours(xp), 0)), gout * gr + Vector((0, ours(xp), 0)), 0.28, m_gun, coil, seg=12)
     B.empty("Gun_Rail", (0, 0, 0))     # the Earth hull carries no railgun; the node keeps the game's lookup simple
 
     # reference points: Drive, Laser, Gun, Sensors, Radiators, Crew; and the drive exit
-    for i, p in enumerate([(0, ours(70), 0), (0, y0, hr + 2.5), gout * gr + Vector((0, ours(-25), 0)),
-                           (0, ours(-92), 0), (0, ours(25), 40.0), (0, ours(-73), 0)]):
+    for i, p in enumerate([(0, ours(70), 0), (0, ours(-65), 13.0), gout * gr + Vector((0, ours(-25), 0)),
+                           (0, ours(-89), 0), (0, ours(25), 40.0), (0, ours(-73), 0)]):
         B.empty(f"Sys{i}", p)
     B.empty("Nozzle", (0, ours(89.6), 0))
     bpy.context.view_layer.update()

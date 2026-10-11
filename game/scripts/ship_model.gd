@@ -24,7 +24,7 @@ const OMS_AFT := 0.765
 ## Build the ship. gun_kind: 0 none, 1 railgun, 2 coilgun.
 func build(is_mars: bool, gun_kind: int) -> void:
 	mars = is_mars
-	length = 130.0 if mars else 187.7
+	length = 130.0 if mars else 180.0
 	var root: Node3D = (load("res://models/mars.glb" if mars else "res://models/earth.glb") as PackedScene).instantiate()
 	add_child(root)
 	var grid := _grid_texture()
@@ -156,7 +156,12 @@ func _show_oms(exhaust: Vector3) -> void:
 			var dz := Vector3(0, 0, signf(exhaust.z))
 			var sc := clampf(absf(exhaust.z), 0.4, 1.0)
 			var p := (pods[k][1] as Node3D).position
-			aj.transform = Transform3D(_basis_y(dz), p + dz * r * 2.25 * sc).scaled_local(Vector3.ONE * sc)
+			# A pod with its own axial nozzle fires straight along the hull; a pod with one outward bell (the Dagger)
+			# fires all four bells of the station canted toward the exhaust side, their sideways pushes cancelling.
+			var d := dz
+			if p.distance_to((pods[k][0] as Node3D).position) < 0.01:
+				d = ((pods[k][2] as Vector3) + dz * 0.4).normalized()
+			aj.transform = Transform3D(_basis_y(d), p + d * r * 2.25 * sc).scaled_local(Vector3.ONE * sc)
 
 ## Turn the turrets that bear toward a point in world space; the others park pointing forward along the hull.
 func aim(world_target: Vector3, bears: Array) -> void:
