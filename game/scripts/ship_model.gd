@@ -15,6 +15,13 @@ var rad_pivots: Array = []            # radiator roots: scaling local X folds a 
 var turrets: Array = []               # [pivot (emitter along its -Z), muzzle, lens, dome material, dome colour]
 var pods: Array = []                  # OMS nozzles: [radial node, axial node, outward dir, station "F"/"A", radial jet, axial jet]
 var plume: MeshInstance3D
+var plume_mat: ShaderMaterial
+const PLUME_SHADER := preload("res://shaders/plume.gdshader")
+## Exhaust display (artistic, after the Dagger v4 concept): the drive plume runs 18 m at the lowest throttle to
+## 140 m at full, brightening as it lengthens; OMS jets are short soft glows.
+const DRIVE_PLUME_MIN := 18.0
+const DRIVE_PLUME_MAX := 140.0
+const OMS_PLUME_LENGTH := 5.0
 var sys_nodes: Array = []
 var _rad_open := 1.0
 
@@ -75,27 +82,45 @@ func build(is_mars: bool, gun_kind: int) -> void:
 			var an := root.find_child("OMSAX_%s%d" % [tag, k], true, false) as Node3D
 			var out := Vector3(rn.position.x, rn.position.y, 0).normalized()
 			pods.append([rn, an, out, tag, _jet(r), _jet(r)])
-	# drive plume from the nozzle
+	# drive plume from the nozzle: a glowing plasma volume whose length and brightness follow the throttle
 	var nozzle := root.find_child("Nozzle", true, false) as Node3D
 	plume = MeshInstance3D.new()
-	var pm := CylinderMesh.new()
-	pm.top_radius = r * 1.0
-	pm.bottom_radius = r * 3.2
-	pm.height = length * 0.8
-	pm.cap_top = false
-	pm.cap_bottom = false
-	plume.mesh = pm
-	plume.rotation.x = -PI / 2
-	plume.position = nozzle.position + Vector3(0, 0, length * 0.4)
-	var plm := StandardMaterial3D.new()
-	plm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	plm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	plm.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
-	plm.albedo_color = Color(0.35, 0.28, 0.9, 0.55) if not mars else Color(0.9, 0.45, 0.25, 0.55)
-	plm.cull_mode = BaseMaterial3D.CULL_DISABLED
-	plume.material_override = plm
+	plume.mesh = _plume_mesh([[0.0, 4.6], [0.06, 3.2], [0.22, 2.0], [0.5, 2.5], [0.8, 5.0], [1.0, 6.8]], 48)
+	plume.position = nozzle.position
+	plume_mat = ShaderMaterial.new()
+	plume_mat.shader = PLUME_SHADER
+	plume_mat.set_shader_parameter("tint", Color(0.24, 0.40, 1.0) if not mars else Color(1.0, 0.5, 0.25))
+	plume.material_override = plume_mat
 	plume.visible = false
 	add_child(plume)
+
+## A surface of revolution along +Z for exhaust: profile [[t, radius m], ...] with t 0 at the nozzle, 1 at the end
+## (scale the node's Z to set the length). UV.y carries t for the shader's fade.
+static func _plume_mesh(profile: Array, seg: int, axis_y := false) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in range(profile.size() - 1):
+		var t0: float = profile[i][0]
+		var t1: float = profile[i + 1][0]
+		var r0: float = profile[i][1]
+		var r1: float = profile[i + 1][1]
+		for k in seg:
+			var a0 := TAU * k / seg
+			var a1 := TAU * (k + 1) / seg
+			var q := [[a0, r0, t0], [a0, r1, t1], [a1, r1, t1], [a0, r0, t0], [a1, r1, t1], [a1, r0, t0]]
+			for v in q:
+				var a: float = v[0]
+				var rr: float = v[1]
+				var t: float = v[2]
+				var n := Vector3(cos(a), sin(a), 0)
+				var p := Vector3(cos(a) * rr, sin(a) * rr, t)
+				if axis_y:
+					n = Vector3(n.x, 0, n.y)
+					p = Vector3(p.x, p.z, p.y)
+				st.set_normal(n)
+				st.set_uv(Vector2(float(k) / seg, t))
+				st.add_vertex(p)
+	return st.commit()
 
 func _under_rad_pivot(n: Node) -> bool:
 	var p := n.get_parent()
@@ -104,21 +129,16 @@ func _under_rad_pivot(n: Node) -> bool:
 		p = p.get_parent()
 	return false
 
-## A thruster jet: a short bright cone along its local +Y, hidden until used.
-func _jet(r: float) -> MeshInstance3D:
+## A thruster jet: a short soft glow widening out of the nozzle along local +Y, hidden until used.
+func _jet(_r: float) -> MeshInstance3D:
 	var j := MeshInstance3D.new()
-	var cm := CylinderMesh.new()
-	cm.top_radius = r * 0.35       # wide end away from the nozzle
-	cm.bottom_radius = r * 0.08
-	cm.height = r * 4.5
-	cm.cap_top = false
-	cm.cap_bottom = false
-	j.mesh = cm
-	var m := StandardMaterial3D.new()
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	m.albedo_color = Color(0.82, 0.9, 1.0, 0.7)
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var L := OMS_PLUME_LENGTH
+	j.mesh = _plume_mesh([[0.0, 0.5], [0.12, 0.55], [0.4, 0.55 + 0.18 * L], [0.8, 0.55 + 0.3 * L], [1.0, 0.55 + 0.38 * L]], 24, true)
+	j.scale = Vector3(1, L, 1)
+	var m := ShaderMaterial.new()
+	m.shader = PLUME_SHADER
+	m.set_shader_parameter("tint", Color(0.52, 0.64, 1.0))
+	m.set_shader_parameter("strength", 1.6)
 	j.material_override = m
 	j.visible = false
 	add_child(j)
@@ -149,7 +169,7 @@ func _show_oms(exhaust: Vector3) -> void:
 			var dir := radial.normalized()
 			var sc := clampf(radial.length(), 0.4, 1.0)
 			var p := (pods[k][0] as Node3D).position
-			rj.transform = Transform3D(_basis_y(dir), p + dir * r * 2.25 * sc).scaled_local(Vector3.ONE * sc)
+			rj.transform = Transform3D(_basis_y(dir), p).scaled_local(Vector3(sc, OMS_PLUME_LENGTH * sc, sc))
 		var aj: MeshInstance3D = pods[k][5]
 		aj.visible = (exhaust.z < -0.2 and tag == "F") or (exhaust.z > 0.2 and tag == "A")
 		if aj.visible:
@@ -161,7 +181,7 @@ func _show_oms(exhaust: Vector3) -> void:
 			var d := dz
 			if p.distance_to((pods[k][0] as Node3D).position) < 0.01:
 				d = ((pods[k][2] as Vector3) + dz * 0.4).normalized()
-			aj.transform = Transform3D(_basis_y(d), p + d * r * 2.25 * sc).scaled_local(Vector3.ONE * sc)
+			aj.transform = Transform3D(_basis_y(d), p).scaled_local(Vector3(sc, OMS_PLUME_LENGTH * sc, sc))
 
 ## Turn the turrets that bear toward a point in world space; the others park pointing forward along the hull.
 func aim(world_target: Vector3, bears: Array) -> void:
@@ -237,6 +257,10 @@ func show_state(s: Dictionary, delta: float) -> void:
 		m.emission_energy_multiplier = glow
 		m.albedo_color = rd[1] if health[4] > 0 else Color(0.3, 0.06, 0.04)
 	plume.visible = s["burning"]
+	if plume.visible:
+		var th: float = clampf(float(s["throttle"]), 0.0, 1.0)
+		plume.scale = Vector3(1, 1, lerpf(DRIVE_PLUME_MIN, DRIVE_PLUME_MAX, th))
+		plume_mat.set_shader_parameter("strength", lerpf(0.9, 3.2, th) * (0.94 + 0.06 * sin(Time.get_ticks_msec() * 0.03)))
 	# OMS: the push in the battle plane, from (forward, left) in ship axes, turned into this model's own axes
 	var oms: Vector2 = s["oms"]
 	var h: float = s["heading"]

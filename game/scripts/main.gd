@@ -140,7 +140,9 @@ func _ready() -> void:
 		if args.has("--hold"): battle.set_weapons_free(false)
 		if args.has("--preset"): _set_mode(1)
 		if args.has("--broadside"): battle.set_facing(1)
-		if args.has("--burn"): battle.set_burn(int(args[args.find("--burn") + 1]), 1.0)
+		if args.has("--burn"):
+			throttle = float(args[args.find("--throttle") + 1]) if args.has("--throttle") else 1.0
+			battle.set_burn(int(args[args.find("--burn") + 1]), throttle)
 		while battle.get_time() < shot_at and battle.get_winner() < 0:
 			battle.advance(1.0)
 			_track_heat()
@@ -153,7 +155,13 @@ func _ready() -> void:
 
 func _build_world() -> void:
 	var env := Environment.new()
-	env.background_mode = Environment.BG_CLEAR_COLOR
+	# A star sky around the whole scene: the background, and something for glowing exhaust to add onto
+	env.background_mode = Environment.BG_SKY
+	var sky := Sky.new()
+	var skymat := PanoramaSkyMaterial.new()
+	skymat.panorama = _star_panorama()
+	sky.sky_material = skymat
+	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.3, 0.33, 0.4)
 	env.ambient_light_energy = 0.5
@@ -207,6 +215,28 @@ func _build_world() -> void:
 	eo_cam.cull_mask = 1
 	eo_vp.add_child(eo_cam)
 	add_child(eo_vp)
+
+## Equirectangular star field: a few thousand faint points, a handful bright, slightly warm or cool. Same every run.
+static func _star_panorama() -> ImageTexture:
+	var w := 4096
+	var h := 2048
+	var img := Image.create(w, h, false, Image.FORMAT_RGB8)
+	img.fill(Color(0.006, 0.008, 0.013))
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 2300
+	for i in 6000:
+		var x := rng.randi_range(0, w - 1)
+		# uniform over the sphere: pick the row by the sine of latitude
+		var y := int((acos(rng.randf_range(-1.0, 1.0)) / PI) * (h - 1))
+		var b := pow(rng.randf(), 6.0) * 0.9 + 0.08
+		var tint := Color(1.0, 0.92, 0.82) if rng.randf() < 0.3 else (Color(0.82, 0.9, 1.0) if rng.randf() < 0.5 else Color.WHITE)
+		img.set_pixel(x, y, tint * b)
+		if b > 0.5:                                  # the brightest few get a small halo
+			for d: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+				var q := Vector2i(x, y) + d
+				if q.x >= 0 and q.x < w and q.y >= 0 and q.y < h:
+					img.set_pixel(q.x, q.y, tint * b * 0.35)
+	return ImageTexture.create_from_image(img)
 
 func _spawn_models() -> void:
 	for m in [own_model, foe_model]:
@@ -431,12 +461,7 @@ func _build_hud() -> void:
 	_build_bottom()
 
 func _build_viewport() -> void:
-	# Star field behind the 3D view, then the 3D view (transparent background), then the drawn overlay.
-	_painter(VP, func(c: Control):
-		c.draw_rect(Rect2(Vector2.ZERO, VP.size), Color("#020407"))
-		for i in 130:
-			var p := Vector2(_sd(i) * VP.size.x, _sd(i + 500) * VP.size.y)
-			c.draw_circle(p, 0.4 + _sd(i + 900), Color(0.9, 0.93, 1.0, 0.2 + _sd(i + 1300) * 0.6)))
+	# The 3D view (its star sky is part of the 3D world), then the drawn overlay.
 	var box := SubViewportContainer.new()
 	box.position = VP.position
 	box.size = VP.size
@@ -445,7 +470,7 @@ func _build_viewport() -> void:
 	hud.add_child(box)
 	view_vp = SubViewport.new()
 	view_vp.size = Vector2i(VP.size)
-	view_vp.transparent_bg = true
+	view_vp.transparent_bg = false
 	view_vp.world_3d = get_world_3d()
 	view_vp.msaa_3d = Viewport.MSAA_4X
 	box.add_child(view_vp)
