@@ -273,16 +273,18 @@ class Frame extends Control:
 
 ## Punched checklist card. Clicking a line emits line_clicked(index).
 class Paper extends Control:
-	var lines: Array = []   # [box, text, time, colour]
+	var lines: Array = []   # [box, text, time, colour, big?]; a big line prints large and bold across the top
+	var _rows: Array = []   # [top y, bottom y] of each line as drawn, for clicks
 	signal line_clicked(index: int)
 	func _init(size_px: Vector2) -> void:
 		custom_minimum_size = size_px; size = size_px
 		mouse_filter = Control.MOUSE_FILTER_STOP
 	func _gui_input(e: InputEvent) -> void:
 		if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
-			var i := int((e.position.y - 4.0) / 18.0)
-			if i >= 0 and i < lines.size():
-				line_clicked.emit(i)
+			for i in _rows.size():
+				if e.position.y >= _rows[i][0] and e.position.y < _rows[i][1]:
+					line_clicked.emit(i)
+					return
 	func set_lines(l: Array) -> void:
 		lines = l; queue_redraw()
 	func _draw() -> void:
@@ -293,14 +295,26 @@ class Paper extends Control:
 		for i in range(k, -1, -1):
 			pts.append(Vector2(w * i / k, h if i % 2 == 1 else h - 5))
 		draw_colored_polygon(pts, PAPER)
+		_rows.clear()
 		var y := 18.0
 		for i in lines.size():
-			draw_circle(Vector2(10, y - 4), 3.5, BG)
 			var l: Array = lines[i]
+			if l.size() > 4 and l[4]:
+				# big bold line: shrink the type until it fits the paper
+				var fs := 17
+				while fs > 11 and W.FH.get_string_size(str(l[1]), HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x > w - 14:
+					fs -= 1
+				draw_rect(Rect2(3, y - 15, w - 6, 26), Color(l[3], 0.12))
+				draw_string(W.FH, Vector2(7, y + 3), str(l[1]), HORIZONTAL_ALIGNMENT_LEFT, -1, fs, l[3])
+				_rows.append([y - 15, y + 11])
+				y += 28
+				continue
+			draw_circle(Vector2(10, y - 4), 3.5, BG)
 			draw_string(W.FM, Vector2(22, y), str(l[0]), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, l[3])
 			draw_string(W.FH, Vector2(40, y), str(l[1]), HORIZONTAL_ALIGNMENT_LEFT, w - 100, 12, l[3])
 			var tw := W.FM.get_string_size(str(l[2]), HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
 			draw_string(W.FM, Vector2(w - 10 - tw, y), str(l[2]), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(l[3], 0.7))
+			_rows.append([y - 14, y + 4])
 			y += 18
 
 ## Attitude ball: sky over ground, turned by the roll, the horizon shifted by pitch; a red marker for the target.

@@ -28,6 +28,12 @@ enum class Sys : int { Drive, Laser, Gun, Sensors, Radiators, Crew, Count };
 constexpr int kSys = static_cast<int>(Sys::Count);
 enum class Section : int { Nose, Body, Aft, Count };
 constexpr int kSec = static_cast<int>(Section::Count);
+/// Armour panels: each section's armour is eight panels around the ship's axis (0 right, then every 45 deg toward the
+/// top: upper right, top, upper left, left, lower left, bottom, lower right), plus a centre panel on the nose cap and
+/// the stern for hits that come straight down the axis (within 10 deg). A hit wears only the panel it lands on.
+constexpr int kPanels = 9;
+constexpr int kCentrePanel = 8;
+const char* panel_name(int panel);
 
 /// Laser turrets: three housings near the bow on the diagonals, halfway between the radiator wings so the wings
 /// never stand in their line of fire: top-right 45, top-left 135 and bottom-right 315 deg, measured around the
@@ -97,7 +103,8 @@ struct Ship {
     Vec2 pos, vel;
     double heading = 0;           // radians, direction the nose points
     std::array<double, kSys> health{};
-    std::array<double, kSec> armor{}, structure{};
+    std::array<double, kSec> armor{}, structure{};   // armor: the mean of the section's panels (kept in step)
+    std::array<std::array<double, kPanels>, kSec> panels{};   // armour left on each panel
     double heat = 0;              // 0-100; weapons lock at 100
     int crew = 0;
     int ammo = 0;
@@ -138,6 +145,7 @@ struct Ship {
     bool laser_armed() const { return turret_armed[0] || turret_armed[1] || turret_armed[2]; }
     double repair_need(Sys s) const;   // health the repair is judged on: the worst turret for the Laser
     double hull_fraction() const;
+    double worst_panel(int sec) const;   // the thinnest panel of a section (where a breach shows first)
 };
 
 struct Shot {
@@ -148,6 +156,15 @@ struct Shot {
     bool hit;
     double impact_time;
     GunKind kind;
+};
+
+/// What a crew believes about the enemy: a damage assessment, reported after a delay and possibly wrong.
+struct Assessment {
+    double made;         // battle time of the hit it is about
+    double due;          // battle time it is reported
+    int observer;        // ship whose crew makes the call
+    std::string text;
+    bool true_kill;      // whether it describes a real kill (for tests; the player never sees this)
 };
 
 struct Event {
@@ -192,6 +209,8 @@ public:
     const std::vector<Ship>& ships() const { return ships_; }
     const std::vector<Shot>& shots() const { return shots_; }
     const std::vector<Event>& events() const { return events_; }
+    const std::vector<Assessment>& pending_assessments() const { return pending_; }
+    const std::vector<Assessment>& reported_assessments() const { return reported_; }
     double range(int a, int b) const;
     double closing(int a, int b) const;
     double sensor_quality(int ship, int target) const;  // 0-1: EO track quality
@@ -217,13 +236,18 @@ private:
     void check_out(Ship& s);
     void damage(Ship& t, Sys aim, double amount, bool laser, int from);
     Section hit_section(const Ship& t, Sys aim, const Ship& from) const;
+    int hit_panel(const Ship& t, Section sec, const Ship& from, bool gun);
     int enemy_of(const Ship& s) const;
     double rnd();
     void log(int ship, const char* kind, std::string text);
+    void assess(int observer, const Ship& target, const std::string& part, bool destroyed, bool real);
+    void release_assessments();
 
     std::vector<Ship> ships_;
     std::vector<Shot> shots_;
     std::vector<Event> events_;
+    std::vector<Assessment> pending_;   // enemy damage assessments waiting to be reported
+    std::vector<Assessment> reported_;  // and those already reported
     std::uint64_t rng_;
     double time_ = 0, carry_ = 0;
     int speed_ = 2;

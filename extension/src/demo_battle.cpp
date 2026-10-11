@@ -49,6 +49,9 @@ Dictionary DemoBattle::get_ship(int64_t i) const {
     PackedFloat64Array health, armor, armor_max, st, st_max;
     for (double v : s.health) health.push_back(v);
     for (int k = 0; k < tdc::kSec; ++k) { armor.push_back(s.armor[k]); armor_max.push_back(s.cls.armor[k]); st.push_back(s.structure[k]); st_max.push_back(s.cls.structure[k]); }
+    PackedFloat64Array worst;
+    for (int k = 0; k < tdc::kSec; ++k) worst.push_back(s.worst_panel(k));
+    d["armor_worst"] = worst;   // thinnest panel per section: where a breach shows
     d["health"] = health; d["armor"] = armor; d["armor_max"] = armor_max; d["structure"] = st; d["structure_max"] = st_max;
     d["hull"] = s.hull_fraction();
     d["radiators_extended"] = s.radiators_extended;
