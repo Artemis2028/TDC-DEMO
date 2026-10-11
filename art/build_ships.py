@@ -429,7 +429,10 @@ def export(path, blend=None):
 
 if __name__ == "__main__":
     save_blend = "--blend" in sys.argv
-    for name, mars in (("earth", False), ("mars", True)):
+    # The Earth ship now comes from the Dagger concept model (art/import_dagger.py); pass --earth to rebuild the
+    # generated Earth hull from this script instead.
+    ships = (("earth", False), ("mars", True)) if "--earth" in sys.argv else (("mars", True),)
+    for name, mars in ships:
         build(mars)
         export(os.path.join(OUT_DIR, f"{name}.glb"),
                os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{name}.blend") if save_blend else None)

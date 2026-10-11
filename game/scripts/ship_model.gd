@@ -10,7 +10,8 @@ var length := 160.0
 var mars := false
 var view_mode := 0                    # 0 real colour, 1 armour condition
 var sec_parts: Array = [[], [], []]   # per section (nose, body, aft): [material, base colour]
-var radiators: Array = []             # [panel, material, base colour]
+var radiators: Array = []             # [material, base colour] of radiator surfaces that glow with heat
+var rad_pivots: Array = []            # radiator roots: scaling local X folds a wing against the hull
 var turrets: Array = []               # [pivot (emitter along its -Z), muzzle, lens, dome material, dome colour]
 var pods: Array = []                  # OMS nozzles: [radial node, axial node, outward dir, station "F"/"A", radial jet, axial jet]
 var plume: MeshInstance3D
@@ -23,7 +24,7 @@ const OMS_AFT := 0.765
 ## Build the ship. gun_kind: 0 none, 1 railgun, 2 coilgun.
 func build(is_mars: bool, gun_kind: int) -> void:
 	mars = is_mars
-	length = 130.0 if mars else 160.0
+	length = 130.0 if mars else 187.7
 	var root: Node3D = (load("res://models/mars.glb" if mars else "res://models/earth.glb") as PackedScene).instantiate()
 	add_child(root)
 	var grid := _grid_texture()
@@ -34,21 +35,26 @@ func build(is_mars: bool, gun_kind: int) -> void:
 		if n.begins_with("N_"): sec = 0
 		elif n.begins_with("B_"): sec = 1
 		elif n.begins_with("A_"): sec = 2
-		var radiator := n.begins_with("Rad")
+		var radiator := _under_rad_pivot(mi)
 		for si in mi.mesh.get_surface_count():
 			var src := mi.get_active_material(si) as StandardMaterial3D
 			if src == null: continue
 			var m := src.duplicate() as StandardMaterial3D
 			if radiator:
-				m.albedo_texture = grid
-				m.uv1_scale = Vector3(3, 2, 1)
-				m.emission_enabled = true
-				m.emission = Color(0.55, 0.12, 0.03)
-				m.emission_energy_multiplier = 0.0
-				radiators.append([mi, m, m.albedo_color])
+				if n.begins_with("Rad") and n.length() < 14:
+					m.albedo_texture = grid           # generated panels carry no texture of their own
+					m.uv1_scale = Vector3(3, 2, 1)
+				# fins (dark surfaces) glow with heat; frames and brackets don't
+				if m.albedo_color.get_luminance() < 0.25 or n.begins_with("Rad") and n.length() < 14:
+					m.emission_enabled = true
+					m.emission = Color(0.55, 0.12, 0.03)
+					m.emission_energy_multiplier = 0.0
+					radiators.append([m, m.albedo_color])
 			elif sec >= 0 and not m.emission_enabled:
 				sec_parts[sec].append([m, m.albedo_color])
 			mi.set_surface_override_material(si, m)
+	for p: Node3D in root.find_children("RadPivot*", "Node3D", true, false):
+		rad_pivots.append(p)
 	# turrets
 	for k in 3:
 		var piv := root.find_child("Turret%d" % k, true, false) as Node3D
@@ -90,6 +96,13 @@ func build(is_mars: bool, gun_kind: int) -> void:
 	plume.material_override = plm
 	plume.visible = false
 	add_child(plume)
+
+func _under_rad_pivot(n: Node) -> bool:
+	var p := n.get_parent()
+	while p != null and p != self:
+		if String(p.name).begins_with("RadPivot"): return true
+		p = p.get_parent()
+	return false
 
 ## A thruster jet: a short bright cone along its local +Y, hidden until used.
 func _jet(r: float) -> MeshInstance3D:
@@ -212,12 +225,12 @@ func show_state(s: Dictionary, delta: float) -> void:
 	_rad_open = move_toward(_rad_open, target, delta * 0.8)
 	var health: PackedFloat64Array = s["health"]
 	var glow: float = clamp((float(s["heat"]) - 30.0) / 70.0, 0.0, 1.0) * 1.5
+	for p: Node3D in rad_pivots:
+		p.scale = Vector3(max(0.04, _rad_open), 1, 1)
 	for rd in radiators:
-		var panel: MeshInstance3D = rd[0]
-		panel.scale = Vector3(max(0.06, _rad_open), 1, 1)
-		var m: StandardMaterial3D = rd[1]
+		var m: StandardMaterial3D = rd[0]
 		m.emission_energy_multiplier = glow
-		m.albedo_color = rd[2] if health[4] > 0 else Color(0.3, 0.06, 0.04)
+		m.albedo_color = rd[1] if health[4] > 0 else Color(0.3, 0.06, 0.04)
 	plume.visible = s["burning"]
 	# OMS: the push in the battle plane, from (forward, left) in ship axes, turned into this model's own axes
 	var oms: Vector2 = s["oms"]
