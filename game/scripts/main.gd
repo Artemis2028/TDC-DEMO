@@ -1162,7 +1162,7 @@ func _update_hud() -> void:
 		if pl.size() >= (4 if banner >= 0 else 5): break
 		if k == banner: continue
 		var l: Array = log_lines[k]
-		var txt: String = str(l[0]).to_upper().replace(": PROBABLE", " PROB.")
+		var txt: String = _teletype(str(l[0])) if l[2] else str(l[0]).to_upper()
 		if txt.length() > 24: txt = txt.substr(0, 23) + "…"
 		pl.append(["◆" if l[2] else "☒", txt, l[1], W.INK_HOT if l[2] else W.INK_DIM])
 		dc_line_sys.append(-1)
@@ -1561,3 +1561,14 @@ func _popup(e: Dictionary) -> void:
 	var detail := str(e["text"]).to_upper()
 	if detail.length() > 46: detail = detail.substr(0, 45) + "…"
 	popups.append([who, head, detail, col, Time.get_ticks_msec() / 1000.0, float(e["time"])])
+
+
+## A crew call in teletype shorthand, so it fits the 24-character line: system codes as on the target buttons and
+## PROB DSBL / PROB DSTR, e.g. "Enemy laser turret 2: probable destroy" -> "ENEMY LSR 2 · PROB DSTR".
+static func _teletype(t: String) -> String:
+	var u := t.to_upper()
+	u = u.replace(": PROBABLE DISABLE", " · PROB DSBL").replace(": PROBABLE DESTROY", " · PROB DSTR")
+	u = u.replace("LASER TURRET ", "LSR ")
+	for i in SYS_NAMES.size():
+		u = u.replace("ENEMY " + str(SYS_NAMES[i]).to_upper() + " ", "ENEMY " + str(SYS_ABBR[i]) + " ")
+	return u
