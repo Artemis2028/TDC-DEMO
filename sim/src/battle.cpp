@@ -228,7 +228,7 @@ double Battle::rnd() {
     return static_cast<double>((rng_ * 2685821657736338717ull) >> 11) * (1.0 / 9007199254740992.0);
 }
 
-void Battle::log(int ship, const char* kind, std::string text) { events_.push_back({time_, ship, kind, std::move(text)}); }
+void Battle::log(int ship, const char* kind, std::string text, bool real) { events_.push_back({time_, ship, kind, std::move(text), real}); }
 
 double Battle::range(int a, int b) const { return (ships_[b].pos - ships_[a].pos).len(); }
 double Battle::closing(int a, int b) const {
@@ -879,7 +879,7 @@ void Battle::release_assessments() {
     for (std::size_t i = 0; i < pending_.size();) {
         if (pending_[i].due <= time_ + 1e-9) {
             const Assessment& a = pending_[i];
-            log(a.observer, "assess", a.text);
+            log(a.observer, "assess", a.text, a.true_kill);
             // When the computer flies the player's ship (balance runs, watch mode) it trusts its crew like a sensible
             // player: a called kill gets marked killed. A human player makes the marks themselves.
             Ship& o = ships_[static_cast<std::size_t>(a.observer)];

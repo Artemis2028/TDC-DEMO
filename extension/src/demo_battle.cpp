@@ -65,6 +65,7 @@ Dictionary DemoBattle::get_ship(int64_t i) const {
     d[KEY("ammo")] = s.ammo; d[KEY("ammo_max")] = s.cls.ammo;
     d[KEY("gun")] = static_cast<int>(s.cls.gun);
     d[KEY("gun_cooldown")] = s.gun_cooldown; d[KEY("gun_reload")] = s.cls.gun_reload;
+    d[KEY("laser_range")] = s.cls.laser_range; d[KEY("gun_range")] = (s.cls.gun == tdc::GunKind::None) ? 0.0 : s.cls.gun_range;
     PackedFloat64Array health, armor, armor_max, st, st_max;
     for (double v : s.health) health.push_back(v);
     for (int k = 0; k < tdc::kSec; ++k) { armor.push_back(s.armor[k]); armor_max.push_back(s.cls.armor[k]); st.push_back(s.structure[k]); st_max.push_back(s.cls.structure[k]); }
@@ -124,6 +125,7 @@ Array DemoBattle::get_events(int64_t from) const {
         Dictionary d;
         d[KEY("time")] = ev[k].time; d[KEY("ship")] = ev[k].ship;
         d[KEY("kind")] = String::utf8(ev[k].kind.c_str()); d[KEY("text")] = String::utf8(ev[k].text.c_str());
+        d[KEY("real")] = ev[k].real;
         a.push_back(d);
     }
     return a;

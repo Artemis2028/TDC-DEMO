@@ -417,6 +417,26 @@ TEST(enemy_kills_are_reported_as_probable_and_sometimes_wrongly) {
     CHECK(bad_delay == 0 && not_probable == 0);
 }
 
+TEST(assess_events_carry_the_reality_flag) {
+    // The "assess" event's real flag (read by the after-action report, never shown in play) must equal the
+    // assessment's true_kill, call for call, and no other kind of event may carry it.
+    int assess = 0, real_n = 0, other_flagged = 0;
+    for (std::uint64_t seed = 1; seed <= 6; ++seed) {
+        auto b = run(seed, 0, 3600);
+        std::vector<bool> ev_flags;
+        for (const auto& e : b.events()) {
+            if (e.kind == "assess") ev_flags.push_back(e.real); else other_flagged += e.real;
+        }
+        const auto& rep = b.reported_assessments();
+        CHECK(ev_flags.size() == rep.size());
+        // reported_ is filled in the same step order as the log
+        for (std::size_t i = 0; i < rep.size() && i < ev_flags.size(); ++i) { CHECK(ev_flags[i] == rep[i].true_kill); real_n += rep[i].true_kill; }
+        assess += static_cast<int>(rep.size());
+    }
+    CHECK(assess > 0 && real_n > 0 && real_n < assess);
+    CHECK(other_flagged == 0);
+}
+
 TEST(enemy_health_is_an_estimate) {
     // Our crew's figures for the enemy are rounded to 10, within the read error of the truth (5 + 25 x (1 - track)
     // either way, plus 5 for the rounding), and held for 5 s between readings.
