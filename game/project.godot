@@ -5,7 +5,13 @@ config_version=5
 config/name="TDC Demo"
 config/description="TDC playable demo: one battle at the Moon."
 run/main_scene="res://scenes/main.tscn"
+run/flush_stdout_on_print=true
 config/features=PackedStringArray("4.5", "Forward Plus")
+
+[debug]
+
+file_logging/enable_file_logging=true
+file_logging/enable_file_logging.pc=true
 
 [display]
 window/size/viewport_width=1440

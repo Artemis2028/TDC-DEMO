@@ -199,6 +199,7 @@ struct Event {
     int ship;
     std::string kind;   // fire, hit, miss, burn-through, disabled, repair, overheat, order, out
     std::string text;
+    bool real = false;  // assess events only: whether the call describes a real kill (for the after-action report; never shown in play)
 };
 
 /// The battle: fixed 0.1 s ticks; speed only sets how many ticks run per real second.
@@ -278,7 +279,7 @@ private:
     double est_rnd();                   // a separate stream for estimates, so watching never changes the battle
     void update_estimates(Ship& s);
     bool believed_alive(const Ship& s, const Ship& t, Sys sys) const;
-    void log(int ship, const char* kind, std::string text);
+    void log(int ship, const char* kind, std::string text, bool real = false);
     void assess(int observer, const Ship& target, Sys sys, int turret, bool real);
     void release_assessments();
 

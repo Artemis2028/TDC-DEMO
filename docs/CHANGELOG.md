@@ -3,6 +3,30 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.11.0
+- **Tactical plot** (V, or the PLOT view button): a top-down picture of the engagement.
+  - Range rings, both ships' velocities and the relative velocity.
+  - Closest point of approach (CPA): distance and time, with the predicted track.
+  - Both sides' weapon ranges, and the enemy's recent trail.
+  - An uncertainty ellipse when your sensors track it poorly.
+  - The 3D view stops rendering while the plot is up.
+- **After-action report** (end screen): result, hull over time, a timeline of key moments, and a few findings backed
+  by the battle's own numbers:
+  - how armour posture mattered;
+  - laser versus gun;
+  - where you were hit;
+  - how many of your crew's "probable" calls were right;
+  - heat lockouts;
+  - repair uptime.
+
+  The report can be exported as text.
+- **How to play:** a two-page briefing before the first battle, and from the menu.
+- **Settings:** volume, window mode (windowed, fullscreen, borderless), frame-rate cap, fire-control lines, briefing.
+  Saved between sessions.
+- **Export logs** (Settings): writes the game logs, a system summary, this battle's events and the report to
+  Documents/TDC Demo logs, with your user name scrubbed from paths, and opens the folder. Nothing is uploaded.
+- **Tooltips** on the HUD's controls and lamps.
+
 ## v0.10.0
 - Starting situations, picked on the main menu or at random:
   - head-on;

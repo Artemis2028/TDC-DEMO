@@ -127,6 +127,12 @@ const STYLE_NAMES := ["a brawler: closed to knife range and slugged it out",
 var scenario_pick := -1          # menu choice for the next battle; -1 random
 var scen_btns: Array = []
 var read_calls := {}             # crew observations of the enemy's manoeuvres already made this battle (see _read_enemy)
+var tplot: TacticalPlot          # V / PLOT: top-down engagement plot over the 3D view
+var aar: AAR                     # after-action recorder for the battle in progress
+var aar_view: AARView
+var settings_panel: SettingsPanel
+var briefing: Briefing
+var _brief_paused := false
 var hud_wait := 0.0             # real seconds until the slow part of the HUD refreshes
 var hud_dirty := true
 const HUD_HZ := 15.0
@@ -140,8 +146,10 @@ var shot_clicks: Array = []   # --click x,y (repeatable): synthetic clicks for c
 
 func _ready() -> void:
 	RenderingServer.set_default_clear_color(W.BG)
-	# Vsync stays on; the cap stops a 144-240 Hz monitor from driving the GPU flat out for a tactical view.
-	Engine.max_fps = 120
+	# Saved settings: volume, window mode, frame cap (default 120: vsync stays on, but a 144-240 Hz monitor shouldn't
+	# drive the GPU flat out for a tactical view), fire-control lines, briefing.
+	Settings.load_and_apply()
+	fc_lines = Settings.fc_lines
 	DisplayServer.window_set_title("TDC Demo " + Version.text())
 	sfx = Sfx.new()
 	add_child(sfx)
@@ -154,6 +162,15 @@ func _ready() -> void:
 	_build_hud()
 	_build_menu()
 	_build_end()
+	settings_panel = SettingsPanel.create(self)
+	briefing = Briefing.create(self)
+	settings_panel.briefing = briefing
+	settings_panel.sfx = sfx
+	settings_panel.extra_provider = _log_extras
+	briefing.closed.connect(func():
+		if _brief_paused and battle != null:
+			_brief_paused = false
+			battle.set_speed(2))
 	var args := OS.get_cmdline_user_args()
 	for i in args.size():
 		match args[i]:
@@ -181,6 +198,7 @@ func _ready() -> void:
 		if args.has("--preset"): _set_mode(1)
 		if args.has("--broadside"): battle.set_facing(1)
 		if args.has("--roll"): battle.set_roll(1)
+		if args.has("--plot"): _toggle_plot()
 		if args.has("--marks"):            # screenshots: show a degraded and a killed mark
 			battle.set_mark(0, -1, 1)
 			battle.set_mark(3, -1, 2)
@@ -190,6 +208,9 @@ func _ready() -> void:
 		while battle.get_time() < shot_at and battle.get_winner() < 0:
 			battle.advance(1.0)
 			_track_heat()
+			if args.has("--aar"):        # feed the after-action recorder as a live battle would
+				_snap()
+				_drain_events()
 		battle.set_speed(0)
 		_drain_events()
 	else:
@@ -334,7 +355,7 @@ static func _arg_int(args: PackedStringArray, flag: String, fallback: int) -> in
 	var i := args.find(flag)
 	return int(args[i + 1]) if i >= 0 and i + 1 < args.size() else fallback
 
-func _start(cls: int) -> void:
+func _start(cls: int, brief := true) -> void:
 	ship_class = cls
 	battle = DemoBattle.new()
 	# Screenshots use a fixed seed and today's head-on brawler unless --scenario / --personality say otherwise.
@@ -363,9 +384,19 @@ func _start(cls: int) -> void:
 	menu.visible = false
 	end_screen.visible = false
 	hud.visible = true
+	tplot.reset()
+	aar = AAR.new()
+	fc_lines = Settings.fc_lines
+	if brief and shot_path == "" and bench_frames == 0 and Briefing.wanted():
+		battle.set_speed(0)          # the first battle waits while the briefing is up
+		_brief_paused = true
+		briefing.open()
 
 func _drain_events() -> void:
-	for e in battle.get_events(ev_index):
+	var evs: Array = battle.get_events(ev_index)
+	if aar and not aar.done:
+		aar.record(S0, S1, battle.get_time(), battle.get_range_km(), evs)
+	for e in evs:
 		_event_sound(e)
 		_popup(e)
 		if str(e["kind"]) == "fire":          # gun fired: coils and muzzle light up on whichever ship fired
@@ -472,10 +503,12 @@ func _process(delta: float) -> void:
 		_track_heat()
 		_loop_sounds(delta)
 		if battle.get_winner() >= 0 and not end_screen.visible:
+			if aar and not aar.done: aar.finish(battle)
 			_show_end()
 	var tc := Time.get_ticks_usec()
 	if battle:
 		_update_world(delta)
+		if state == "battle": tplot.update_from(S0, S1, battle.get_time(), battle.get_sensor_quality(), battle.get_closing())
 	var td := Time.get_ticks_usec()
 	if battle and hud.visible:
 		_update_hud(delta)
@@ -501,6 +534,9 @@ func _process(delta: float) -> void:
 			var m: ShipModel = foe_model if view_target else own_model
 			m.fire_gun()
 			m._process(float(args[args.find("--fx") + 1]))
+		if shot_frames == 20 and OS.get_cmdline_user_args().has("--aar") and end_screen.visible: _open_aar()
+		if shot_frames == 20 and OS.get_cmdline_user_args().has("--settings"): settings_panel.open()
+		if shot_frames == 20 and OS.get_cmdline_user_args().has("--brief"): briefing.open()
 		if shot_frames == 40:
 			var img := get_viewport().get_texture().get_image()
 			img.save_png(shot_path)
@@ -594,6 +630,65 @@ static func _sd(n: float) -> float:
 
 # ------------------------------------------------------------------ HUD build
 
+## Hover help: one or two plain sentences on what a control does and the reason behind it. Display-only widgets are
+## switched from ignoring the mouse to passing it on, so they can show a tooltip without blocking clicks.
+func _add_tooltips() -> void:
+	var th := Theme.new()                # tooltips in the HUD's look rather than Godot's grey default
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.04, 0.06, 0.08, 0.97)
+	sb.border_color = W.SEC
+	sb.set_border_width_all(1)
+	sb.set_content_margin_all(8)
+	th.set_stylebox("panel", "TooltipPanel", sb)
+	th.set_font("font", "TooltipLabel", W.FM)
+	th.set_font_size("font_size", "TooltipLabel", 12)
+	th.set_color("font_color", "TooltipLabel", W.TEXT)
+	hud.theme = th
+	var tip := func(c: Control, t: String) -> void:
+		c.tooltip_text = t
+		if c.mouse_filter == Control.MOUSE_FILTER_IGNORE: c.mouse_filter = Control.MOUSE_FILTER_PASS
+	tip.call(arm_rows[0][0], "The spinal gun. ARM lets fire control shoot it when the target is in arc and range.\nRounds take seconds to arrive: the hit chance falls with range and the target's manoeuvring.")
+	for k in 3:
+		tip.call(arm_rows[1 + k][0], "Laser turret %d. ARM lets it fire whenever the enemy is in its arc.\nThe number is the turret's condition; at 0 it is destroyed." % (k + 1))
+	tip.call(mode_btns[0], "MANUAL: aim at the system you pick below and keep at it. Slightly lower hit chance.")
+	tip.call(mode_btns[1], "PRESET: the picked system is a standing order; the buttons show what each aims for.")
+	tip.call(mode_btns[2], "AUTO: fire control picks the target. It trusts your crew's kill marks, so a wrong mark wastes fire.")
+	tip.call(guard, "Weapons safe / free (Space). Nothing fires while the guard is closed.")
+	for i in tgt_btns.size():
+		tip.call(tgt_btns[i], "Aim at the enemy's %s. The number is your crew's estimate (≈), not the truth.\nRight-click to mark it degraded or killed." % str(SYS_NAMES[int(TARGETS[i][0])]).to_lower())
+	var helm_tips := ["Roll left (Q). Rolling turns fresh armour panels to the beam; press again to stop.",
+		"Burn toward the enemy (W). Main drive along the nose: strong, but it adds heat.",
+		"Roll right (E). Rolling turns fresh armour panels to the beam; press again to stop.",
+		"Match velocity with the enemy (X): burn until the range stops changing.",
+		"Sideways burn left (A) on the OMS pods: weak, but the nose stays on the enemy.",
+		"Burn away from the enemy (S) to open the range or brake.",
+		"Sideways burn right (D) on the OMS pods: weak, but the nose stays on the enemy.",
+		"Side-on / nose-on (T). Side-on brings every turret to bear but shows the enemy your long, thin side armour."]
+	for i in helm_btns.size(): tip.call(helm_btns[i], helm_tips[i])
+	tip.call(ignite, "Ignite / cut the drive (I) for the selected burn. Drive burns cost propellant (Δv) and heat.")
+	for d in dv_scr: tip.call(d, "Δv remaining, m/s: every burn spends it. At zero you can't manoeuvre.")
+	tip.call(ball, "Attitude: the marker is the enemy's bearing off your nose; the horizon tilts as you roll.")
+	var lamp_tips := ["Weapons free: your guns may fire.", "Track: the sensors hold the enemy well enough to resolve its parts.",
+		"Incoming: an enemy round is in flight toward you.", "Laser warning: an enemy beam is on your hull.",
+		"Heat above 70. At 100 your weapons lock out.", "Lockout: weapons locked until heat falls below 70.",
+		"Hull below 85 %.", "Drive damaged.", "Repair teams at work.", "Δv low: under 20 % propellant left.",
+		"Radiators stowed: safe from hits but cooling slowly.", "Master alarm: something on this panel is red."]
+	for i in lamps.size(): tip.call(lamps[i], lamp_tips[i])
+	tip.call(ring, "Heat, 0 to 100. Lasers and the drive add it; radiators shed it.\nAt 100 your weapons lock out until it falls below 70.")
+	tip.call(rad_btns[0], "Extend the radiators: fast cooling, but they are a large, fragile target.")
+	tip.call(rad_btns[1], "Stow the radiators: safe from hits, slow cooling.")
+	tip.call(auto_btn, "Auto repair: teams go to the worst damage themselves. Switch off to pick jobs by clicking the card.")
+	tip.call(paper, "Damage control. Repairs in progress and damage to fix (click a line to send a team).\nCalls about the enemy are your crew's best guess: PROBABLE, and sometimes wrong.")
+	# (no tooltip on the EO scope itself: clicks on it go to _unhandled_input to pick targets, and a tooltip
+	# control there would swallow them; the footer label carries the hint instead)
+	tip.call(scope_foot_l, "EO telescope: what your sensors actually see. Poor tracking shows as big pixels;\ncloser in it resolves the enemy's parts, which you can click to target.")
+	for i in speed_btns.size(): tip.call(speed_btns[i], "Time compression (P pauses, , and . step). Fast time drops back to 1× when weapons come into range.")
+	var view_tips := ["Look at your own ship.", "Look at the enemy as your EO sensors see it; click its parts to target them.",
+		"Chase camera behind your ship (C).", "Tactical plot (V): ranges, velocities and the closest approach, top-down.",
+		"Real colour.", "Armour view: each section tinted by its thinnest panel.", "", ""]
+	for i in view_btns.size():
+		if view_tips[i] != "": tip.call(view_btns[i], view_tips[i])
+
 func _add(c: Control, pos: Vector2, parent: Control = null) -> Control:
 	c.position = pos
 	(parent if parent else hud).add_child(c)
@@ -632,6 +727,7 @@ func _build_hud() -> void:
 	_build_right()
 	_build_bottom()
 	_add(W.Txt.new("TDC DEMO · " + Version.text(), 10, W.FAINT, true, 300), Vector2(20, 20))
+	_add_tooltips()
 
 func _build_viewport() -> void:
 	# The 3D view (its star sky is part of the 3D world), then the drawn overlay.
@@ -655,6 +751,10 @@ func _build_viewport() -> void:
 	cam.far = 6.0e6
 	view_vp.add_child(cam)
 	overlay = _painter(VP, _draw_overlay)
+	tplot = TacticalPlot.new()            # over the 3D view and its overlay, under the alerts and time controls
+	tplot.size = VP.size
+	tplot.visible = false
+	_add(tplot, VP.position)
 	alerts = _painter(VP, _draw_alerts)      # laser warning and hit callouts, on top of everything in the view
 	# time compression, top right of the view
 	var x := VP.end.x - 18 - SPEED_NAMES.size() * 44
@@ -811,7 +911,7 @@ func _build_bottom() -> void:
 	rwr_txt = W.Txt.new("", 10, W.MUTED, true, 190)
 	_add(rwr_txt, Vector2(604, y + 80))
 	var vw := (268.0 - 9) / 4
-	var views := [["Own", "own"], ["Enemy", "enemy"], ["Chase", "chase"], ["Aim", ""], ["Real", "real"], ["Armor", "armor"], ["Eclipse", ""], ["IR view", ""]]
+	var views := [["Own", "own"], ["Enemy", "enemy"], ["Chase", "chase"], ["Plot", "plot"], ["Real", "real"], ["Armor", "armor"], ["Eclipse", ""], ["IR view", ""]]
 	for i in views.size():
 		var pos := Vector2(836 + (i % 4) * (vw + 3), y + 24 + (i / 4) * 33)
 		var v: String = views[i][1]
@@ -998,11 +1098,22 @@ func _helm(act) -> void:
 
 func _view(v: String) -> void:
 	match v:
-		"own": view_target = false
-		"enemy": view_target = true
+		"own":
+			view_target = false
+			if tplot.visible: _toggle_plot()
+		"enemy":
+			view_target = true
+			if tplot.visible: _toggle_plot()
 		"chase": chase = not chase
+		"plot": _toggle_plot()
 		"real": armor_view = false
 		"armor": armor_view = true
+
+## The tactical plot replaces the 3D view while it's up, and the 3D view stops rendering underneath it.
+func _toggle_plot() -> void:
+	tplot.visible = not tplot.visible
+	view_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED if tplot.visible else SubViewport.UPDATE_WHEN_VISIBLE
+	hud_dirty = true
 
 func _on_dc_line(i: int) -> void:
 	if i < dc_line_sys.size() and int(dc_line_sys[i]) >= 0:
@@ -1191,7 +1302,7 @@ func _update_hud(delta: float) -> void:
 		rwr_txt.set_text("LASER WARNING · UNDER FIRE", W.HOT)
 	else:
 		rwr_txt.set_text("TGT BRG %03d · OFF NOSE %+d°" % [int(round(rad_to_deg(wrapf(brg, 0, TAU)))) % 360, int(off)], W.MUTED)
-	var vstate := [not view_target, view_target, chase, false, not armor_view, armor_view, false, false]
+	var vstate := [not view_target and not tplot.visible, view_target and not tplot.visible, chase, tplot.visible, not armor_view, armor_view, false, false]
 	for i in view_btns.size():
 		(view_btns[i] as W.Btn).set_state(vstate[i])
 
@@ -1304,7 +1415,7 @@ func _update_hud(delta: float) -> void:
 	scope_foot_r.set_text("TRACK %d%%" % int(q * 100))
 
 func _draw_overlay(c: Control) -> void:
-	if battle == null: return
+	if battle == null or tplot.visible: return       # the plot covers the view
 	var own: Dictionary = S0
 	var foe: Dictionary = S1
 	var q: float = battle.get_sensor_quality()
@@ -1464,8 +1575,13 @@ func _build_menu() -> void:
 	ver.size = Vector2(400, 20)
 	ver.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	menu.add_child(ver)
-	v.add_child(UI.button("Quit", func(): get_tree().quit(), UI.MUTED, 400))
-	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll left/right (again to stop) · T side-on / nose-on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · B fire-control lines · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Right-click a target button to mark it degraded / killed · Esc menu", 12, UI.FAINT)
+	var row2 := HBoxContainer.new()
+	row2.add_theme_constant_override("separation", 4)
+	row2.add_child(UI.button("How to play", func(): briefing.open(), UI.SEC, 132))
+	row2.add_child(UI.button("Settings", func(): settings_panel.open(), UI.SEC, 132))
+	row2.add_child(UI.button("Quit", func(): get_tree().quit(), UI.MUTED, 128))
+	v.add_child(row2)
+	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll left/right (again to stop) · T side-on / nose-on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · V tactical plot · B fire-control lines · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Right-click a target button to mark it degraded / killed · Esc menu", 12, UI.FAINT)
 	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	keys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	keys.custom_minimum_size.x = 400
@@ -1519,12 +1635,39 @@ func _show_end() -> void:
 		var l := UI.label(s, 16, UI.TEXT)
 		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		v.add_child(l)
+	aar_view = null                  # the old one was freed with the end screen's children
+	v.add_child(UI.button("After-action report", _open_aar, UI.SEC, 500))
 	v.add_child(UI.button("Fight again", func(): _start(ship_class), UI.PRI, 500))
 	v.add_child(UI.button("Main menu", func(): _show_menu(), UI.SEC, 500))
 	v.add_child(UI.button("Support development on Patreon", _open_patreon, UI.HOT, 500))
 
+func _open_aar() -> void:
+	if aar == null or not aar.done: return
+	if aar_view == null:
+		var dim := ColorRect.new()           # covers the end screen's own text while the report is up
+		dim.color = Color(W.BG, 0.94)
+		dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+		end_screen.add_child(dim)
+		aar_view = AARView.new()
+		end_screen.add_child(aar_view)
+		aar_view.closed.connect(func(): dim.visible = false)
+		aar_view.visibility_changed.connect(func(): dim.visible = aar_view.visible)
+	aar_view.position = (get_viewport().get_visible_rect().size - aar_view.size) * 0.5
+	aar_view.show_report(aar)
+
+## Extra files for the log export: this battle's events and, once it's over, the after-action report.
+func _log_extras() -> Dictionary:
+	var out := {}
+	if battle != null:
+		var lines := PackedStringArray()
+		for e in battle.get_events(0):
+			lines.append("%s  [%s] %s" % [_clock(float(e["time"])), str(e["kind"]), str(e["text"])])
+		out["battle_events.txt"] = "\n".join(lines)
+	if aar and aar.done: out["after_action.txt"] = aar.as_text()
+	return out
+
 func _watch_ai() -> void:
-	_start(1)
+	_start(1, false)                 # no briefing for a battle the player only watches
 	battle.set_player_ai(true)
 
 func _open_patreon() -> void:
@@ -1536,6 +1679,7 @@ func _open_patreon() -> void:
 ## Click an enemy component in the enemy view or on the EO scope to target it; click the target bracket to look at it.
 func _click_target(p: Vector2) -> bool:
 	if battle == null or state != "battle": return false
+	if VP.has_point(p) and tplot.visible: return false     # the plot covers the view: no hidden 3D picks
 	if VP.has_point(p):
 		var local := p - VP.position
 		if not view_target:
@@ -1609,9 +1753,12 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_P: battle.set_speed(0 if battle.get_speed() != 0 else 2)
 			KEY_PERIOD: battle.set_speed(battle.get_speed() + 1)
 			KEY_COMMA: battle.set_speed(max(1, battle.get_speed() - 1))
-			KEY_TAB: view_target = not view_target
+			KEY_TAB:
+				view_target = not view_target
+				if tplot.visible: _toggle_plot()
 			KEY_C: chase = not chase
 			KEY_B: fc_lines = not fc_lines
+			KEY_V: _toggle_plot()
 			KEY_Q: _helm("roll-")
 			KEY_E: _helm("roll+")
 			KEY_T: _helm("side")
@@ -1624,7 +1771,9 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_F1: _set_mode(0)
 			KEY_F2: _set_mode(1)
 			KEY_F3: _set_mode(2)
-			KEY_ESCAPE: _show_menu()
+			KEY_ESCAPE:
+				if aar_view != null and aar_view.visible: aar_view.visible = false   # close the report first
+				else: _show_menu()
 			KEY_M: sfx.muted = not sfx.muted
 
 
