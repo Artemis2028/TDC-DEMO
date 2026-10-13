@@ -12,7 +12,18 @@ using namespace godot;
 
 DemoBattle::DemoBattle() { start(1, 0); }
 
-void DemoBattle::start(int64_t seed, int64_t ship_class) { b_ = std::make_unique<tdc::Battle>(static_cast<std::uint64_t>(seed), static_cast<int>(ship_class)); }
+// scenario / personality: 0.. = that value (0 = head-on / brawler, the old battle), -1 = pick from the seed.
+// Anything else out of range falls back to 0.
+void DemoBattle::start(int64_t seed, int64_t ship_class, int64_t scenario, int64_t personality) {
+    auto useed = static_cast<std::uint64_t>(seed);
+    tdc::Scenario sc = scenario < 0 ? tdc::pick_scenario(useed)
+        : (scenario < static_cast<int64_t>(tdc::Scenario::Count) ? static_cast<tdc::Scenario>(scenario) : tdc::Scenario::HeadOn);
+    tdc::Personality pe = personality < 0 ? tdc::pick_personality(useed)
+        : (personality < static_cast<int64_t>(tdc::Personality::Count) ? static_cast<tdc::Personality>(personality) : tdc::Personality::Brawler);
+    b_ = std::make_unique<tdc::Battle>(useed, static_cast<int>(ship_class), 120e3, sc, pe);
+}
+int64_t DemoBattle::get_scenario() const { return static_cast<int64_t>(b_->scenario()); }
+int64_t DemoBattle::get_personality() const { return static_cast<int64_t>(b_->personality()); }
 void DemoBattle::advance(double s) { b_->advance(s); }
 void DemoBattle::set_speed(int64_t i) { b_->set_speed(static_cast<int>(i)); }
 int64_t DemoBattle::get_speed() const { return b_->speed_index(); }
@@ -83,6 +94,7 @@ Dictionary DemoBattle::get_ship(int64_t i) const {
         taim.push_back(Vector3(static_cast<real_t>(a.n), static_cast<real_t>(a.r), static_cast<real_t>(a.u)));
     }
     d[KEY("turret_hp")] = thp; d[KEY("turret_armed")] = tarm; d[KEY("turret_firing")] = tfire; d[KEY("turret_bears")] = tbear; d[KEY("turret_aim")] = taim;
+    d[KEY("ai_lateral")] = s.ai_lateral;
     d[KEY("roll")] = s.roll; d[KEY("roll_dir")] = s.roll_dir;
     d[KEY("burning")] = s.main_firing;
     d[KEY("oms")] = Vector2(static_cast<real_t>(s.oms_fwd), static_cast<real_t>(s.oms_left));
@@ -130,7 +142,9 @@ Array DemoBattle::get_shots() const {
 }
 
 void DemoBattle::_bind_methods() {
-    ClassDB::bind_method(D_METHOD("start", "seed", "ship_class"), &DemoBattle::start);
+    ClassDB::bind_method(D_METHOD("start", "seed", "ship_class", "scenario", "personality"), &DemoBattle::start, DEFVAL(0), DEFVAL(0));
+    ClassDB::bind_method(D_METHOD("get_scenario"), &DemoBattle::get_scenario);
+    ClassDB::bind_method(D_METHOD("get_personality"), &DemoBattle::get_personality);
     ClassDB::bind_method(D_METHOD("advance", "real_seconds"), &DemoBattle::advance);
     ClassDB::bind_method(D_METHOD("set_speed", "index"), &DemoBattle::set_speed);
     ClassDB::bind_method(D_METHOD("get_speed"), &DemoBattle::get_speed);

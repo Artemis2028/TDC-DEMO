@@ -59,6 +59,15 @@ enum class GunKind : int { None, Railgun, Coilgun };
 enum class Facing : int { Nose, Broadside, Away };
 enum class FireMode : int { Auto, Manual };
 enum class Burn : int { Off, Toward, Away, Left, Right, Stop };
+/// Starting situation of a battle. HeadOn: both at rest, nose to nose. Crossing: the frigate starts off to one side and
+/// sweeps across the player's bow. SternChase: the frigate starts dead astern of the player, already closing.
+enum class Scenario : int { HeadOn, Crossing, SternChase, Count };
+/// How an AI ship fights. Brawler: close to 20 km and hold. Kiter: keep a long standoff, retreating when pressed.
+/// Broadsider: close like a brawler, then turn side-on and roll. Never shown to the player; they read it from the motion.
+enum class Personality : int { Brawler, Kiter, Broadsider, Count };
+/// Pick a scenario / personality from the seed alone (own mixing step; never touches a battle's rng).
+Scenario pick_scenario(std::uint64_t seed);
+Personality pick_personality(std::uint64_t seed);
 
 const char* sys_name(Sys s);
 const char* section_name(Section s);
@@ -136,6 +145,12 @@ struct Ship {
     int roll_dir = 0;                              // rolling: +1 one way, -1 the other, 0 holding steady (any facing)
     bool out = false;
     std::string out_reason;
+    // AI state (not part of the state hash; it only steers the ship's orders)
+    Personality style = Personality::Brawler;
+    bool ai_retreat = false;      // Kiter: currently running (stern to the enemy)
+    double ai_clock = -1;         // AI phase clock (battle time). Broadsider: when it first got in range (-1: not yet). Kiter: end of the current burst or cooldown
+    bool ai_lateral = false;      // AI is burning off sideways drift across the line of sight
+    int broadside_dir = 1;        // +1: broadside puts the nose left of the line to the enemy (the player's only choice); -1: right (AI only)
     double disarmed_for = 0;
     bool overheated = false;      // set at 100 heat, cleared below 70: weapons locked meanwhile
     bool holding_heat = false;    // AI heat discipline: laser held between 90 and 60
@@ -192,7 +207,10 @@ public:
     static constexpr double kDt = 0.1;
     static constexpr std::array<double, 7> kSpeeds{0, 0.5, 1, 2, 5, 10, 50};  // 50x = cruise
 
-    Battle(std::uint64_t seed, int player_class, double start_range_m = 120e3);
+    Battle(std::uint64_t seed, int player_class, double start_range_m = 120e3,
+           Scenario scenario = Scenario::HeadOn, Personality personality = Personality::Brawler);
+    Scenario scenario() const { return scenario_; }
+    Personality personality() const { return personality_; }   // the enemy frigate's
 
     // time
     void advance(double real_seconds);  // runs whole ticks at the current speed
@@ -235,10 +253,15 @@ public:
     /// Angle (rad) between where turret k points and the target.
     double turret_error(int ship, int turret, int target) const;
     int winner() const { return winner_; }              // -1 while fighting
-    std::uint64_t state_hash() const;
+    std::uint64_t state_hash() const;   // physical state plus AI state
+    std::uint64_t core_hash() const;    // physical state only: comparable with hashes from before scenarios existed
 
 private:
     void ai(Ship& s);
+    std::uint64_t hash_state(bool with_ai) const;
+    bool lateral_burn(Ship& s, int enemy);
+    void ai_kite(Ship& s, double r, double c);
+    void ai_broadside(Ship& s, double r, double c);
     void auto_repair(Ship& s);
     void move(Ship& s);
     void fire(Ship& s);
@@ -270,6 +293,8 @@ private:
     int speed_ = 2;
     std::string drop_reason_;
     int winner_ = -1;
+    Scenario scenario_ = Scenario::HeadOn;
+    Personality personality_ = Personality::Brawler;
 };
 
 }  // namespace tdc

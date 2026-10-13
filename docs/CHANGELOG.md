@@ -3,6 +3,21 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.10.0
+- Starting situations, picked on the main menu or at random:
+  - head-on;
+  - crossing (the frigate passes across your bow, drifting sideways);
+  - stern chase (it comes up dead astern, before your turrets bear).
+- Three enemy captains, never named during the fight:
+  - a brawler that closes to knife range;
+  - a kiter that holds about 45 km and backs off when you press;
+  - a broadsider that rolls and turns side-on to bring every turret to bear.
+
+  The crew calls out what it sees ("Enemy turning broadside", "Enemy opening the range"), and the end screen says
+  which captain it was.
+- Balance across all nine combinations (AI vs AI, 100 battles each): Earth wins 54-76 %, and every battle ends.
+- Fire-control lines are drawn in one batch per line (they had been costing a draw command per dash).
+
 ## v0.9.0
 - Lasers no longer draw a glowing beam: in vacuum a beam can't be seen from the side. What shows instead:
   - a hot spot where the beam lands, heating from dull red to white the longer it dwells and cooling once it stops;

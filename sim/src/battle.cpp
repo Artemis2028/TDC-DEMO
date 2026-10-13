@@ -30,7 +30,26 @@ Vec3 turn_toward(Vec3 a, Vec3 b, double step) {
 }
 /// Stowed direction of turret k: straight out from the hull at its mounting angle.
 Vec3 mount(int k) { double t = kTurretAngle[static_cast<std::size_t>(k)]; return {0, std::cos(t), std::sin(t)}; }
+/// SplitMix64 finaliser: a stateless mixing step used for scenario and personality draws, so the battle's own
+/// random streams (rng_, est_rng_) are untouched and existing battles stay bit-identical.
+std::uint64_t splitmix(std::uint64_t z) {
+    z += 0x9E3779B97F4A7C15ull;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+/// Uniform draw in [0,1) from (seed, salt) alone.
+double draw(std::uint64_t seed, std::uint64_t salt) {
+    return static_cast<double>(splitmix(seed * 0xA24BAED4963EE407ull + salt * 0x9FB21C651E98DF25ull) >> 11) * (1.0 / 9007199254740992.0);
+}
 }  // namespace
+
+Scenario pick_scenario(std::uint64_t seed) {
+    return static_cast<Scenario>(static_cast<int>(draw(seed, 101) * static_cast<int>(Scenario::Count)));
+}
+Personality pick_personality(std::uint64_t seed) {
+    return static_cast<Personality>(static_cast<int>(draw(seed, 102) * static_cast<int>(Personality::Count)));
+}
 
 double Vec2::len() const { return std::sqrt(x * x + y * y); }
 Vec2 Vec2::norm() const { double l = len(); return l > 0 ? Vec2{x / l, y / l} : Vec2{1, 0}; }
@@ -147,8 +166,9 @@ static Ship make_ship(int id, const ShipClass& c, int side, bool player, Vec2 po
 
 // ---------------------------------------------------------------- battle
 
-Battle::Battle(std::uint64_t seed, int player_class, double start_range_m)
-    : rng_(seed * 0x9E3779B97F4A7C15ull + 1), est_rng_(seed * 0xD1B54A32D192ED03ull + 7) {
+Battle::Battle(std::uint64_t seed, int player_class, double start_range_m, Scenario scenario, Personality personality)
+    : rng_(seed * 0x9E3779B97F4A7C15ull + 1), est_rng_(seed * 0xD1B54A32D192ED03ull + 7),
+      scenario_(scenario), personality_(personality) {
     ShipClass mine = player_class == 1 ? lance_class() : dagger_class();
     ships_.push_back(make_ship(0, mine, 0, true, {0, 0}, 0));
     ships_.push_back(make_ship(1, frigate_class(), 1, false, {start_range_m, 0}, kPi));
@@ -156,7 +176,46 @@ Battle::Battle(std::uint64_t seed, int player_class, double start_range_m)
     ships_[1].auto_repair = true;
     ships_[1].ai_controlled = true;
     ships_[1].fire_mode = FireMode::Auto;
+    ships_[1].style = personality;
     log(0, "order", "Battle stations. Enemy frigate at " + fmt("%.0f km", start_range_m / 1000));
+
+    // Starting situation. All variation is drawn from the seed by draw(), never from rng_.
+    Ship& f = ships_[1];
+    switch (scenario) {
+        case Scenario::Crossing: {
+            // Frigate 20-40 deg off the player's bow, on a random side, moving exactly across the line of sight at
+            // 100-160 m/s, plus 40 m/s of closing speed so the pass develops into a fight rather than a fly-by.
+            // It opens at 80 % of start_range_m: the sideways burn that both AIs must make before they can close wastes
+            // the long opening, which would otherwise hand Earth's longer-ranged laser a free 300 s (sweep-tuned).
+            // Faster sideways starts (200-300 m/s) were tried: they need 400+ s of side-on burn and fly apart past the
+            // frigate's 110 km laser range, so Earth wins over 90 %.
+            double side = draw(seed, 1) < 0.5 ? -1.0 : 1.0;          // -1: starboard (y < 0), +1: port
+            double a = (20.0 + 20.0 * draw(seed, 2)) * kPi / 180.0;
+            double v_cross = 100.0 + 60.0 * draw(seed, 3);
+            Vec2 u{std::cos(a), side * std::sin(a)};                   // from the player to the frigate
+            Vec2 across{std::sin(a), -side * std::cos(a)};             // perpendicular to u, toward the far side of the bow
+            f.pos = u * (start_range_m * 0.8);
+            f.vel = across * v_cross + u * -40.0;
+            f.heading = std::atan2(-u.y, -u.x);
+            log(0, "order", std::string("Enemy frigate crossing from ") + (side < 0 ? "starboard" : "port") + fmt(" at %.0f m/s", v_cross));
+            break;
+        }
+        case Scenario::SternChase: {
+            // The frigate starts dead astern of the player (the player is the one being chased), already closing at
+            // 20-40 m/s. The player's nose points away, so no turret bears (none fires within 10 deg of the stern)
+            // until the ship has turned round (about 26 s), and the frigate has the first shots. Faster closing speeds
+            // swing the fight to the frigate (Earth below 50 %), slower ones to Earth (sweep-tuned).
+            double open = 20.0 + 20.0 * draw(seed, 4);
+            f.pos = {-start_range_m, 0};
+            f.heading = 0;
+            f.vel = {open, 0};
+            log(0, "order", fmt("Enemy frigate on your tail: dead astern, closing at %.0f m/s", open));
+            break;
+        }
+        default:
+            log(0, "order", "Enemy frigate dead ahead, closing head-on");
+            break;
+    }
 }
 
 double Battle::est_rnd() {
@@ -373,23 +432,108 @@ void Battle::step() {
     }
 }
 
+namespace {
+constexpr double kHold = 20e3;   // brawler's hold range, inside every weapon's full-power range
+
+/// Closing-speed controller shared by the brawler and broadsider: approach to `hold`, no faster than the OMS pods can
+/// brake from (closing speed v with v^2 = 2 a d over the distance d left, 70 % of the pods' acceleration as margin,
+/// capped at 150 m/s). Burn toward when slower than that, brake when faster.
+Burn approach_burn(const Ship& s, double r, double c, double hold = kHold) {
+    double want_c = r > hold ? std::min(150.0, std::sqrt(2.0 * 0.7 * s.cls.oms_accel * (r - hold))) : 0.0;
+    return c < want_c - 5.0 ? Burn::Toward : (c > want_c + 5.0 ? Burn::Away : Burn::Off);
+}
+void set_burn_quiet(Ship& s, Burn b) { if (b != s.burn) { s.burn = b; s.throttle = 1; } }   // AI orders are not logged
+}  // namespace
+
+/// Sideways drift control. The relative velocity across the line of sight (w, + toward this ship's left) is cancelled
+/// before anything else: the ship turns side-on (nose to the side the push must go, so the main drive does the work,
+/// not the weak OMS pods) and burns. Starts above 25 m/s, stops below 8 m/s. Only the Crossing scenario uses it
+/// (for its whole length), so HeadOn and SternChase behave exactly as before even if the player sideslips. Returns true while it holds the helm.
+bool Battle::lateral_burn(Ship& s, int e) {
+    Vec2 to = (ships_[e].pos - s.pos).norm();
+    double w = dot(s.vel - ships_[e].vel, Vec2{-to.y, to.x});
+    if (std::fabs(w) > (s.ai_lateral ? 8.0 : 25.0)) {
+        s.ai_lateral = true;
+        s.facing = Facing::Broadside;
+        s.broadside_dir = w < 0 ? 1 : -1;
+        set_burn_quiet(s, w < 0 ? Burn::Left : Burn::Right);
+        return true;
+    }
+    if (s.ai_lateral) { s.ai_lateral = false; s.broadside_dir = 1; s.facing = Facing::Nose; set_burn_quiet(s, Burn::Off); }
+    return false;
+}
+
 void Battle::ai(Ship& s) {
     int e = enemy_of(s);
     if (e < 0) return;
     double r = range(s.id, e);
-    // Demo AI: press the attack. Close to 20 km, inside every weapon's full-power range, then hold there, so a fight
-    // never stalls at long range with both sides' repairs keeping up. (A smarter AI comes later.)
-    // Approach no faster than the OMS pods can brake from (the nose stays on the enemy, so braking is off the drive
-    // axis): closing speed v with v^2 = 2 a d over the distance d left to the hold range, using 70 % of the pods'
-    // acceleration as margin, capped at 150 m/s. Burn toward when slower than that, brake when faster.
-    constexpr double kHold = 20e3;
     double c = closing(s.id, e);
-    double want_c = r > kHold ? std::min(150.0, std::sqrt(2.0 * 0.7 * s.cls.oms_accel * (r - kHold))) : 0.0;
-    Burn want = c < want_c - 5.0 ? Burn::Toward : (c > want_c + 5.0 ? Burn::Away : Burn::Off);
-    if (want != s.burn) { s.burn = want; s.throttle = 1; }
+    if (scenario_ == Scenario::Crossing && lateral_burn(s, e)) {
+        // Drifting across the line of sight (crossing start): kill the drift first, before closing or holding.
+    } else {
+        if (s.style == Personality::Kiter) ai_kite(s, r, c);
+        else if (s.style == Personality::Broadsider) ai_broadside(s, r, c);
+        else {
+            // Brawler. Demo AI: press the attack. Close to 20 km, inside every weapon's full-power range, then hold
+            // there, so a fight never stalls at long range with both sides' repairs keeping up.
+            set_burn_quiet(s, approach_burn(s, r, c));
+        }
+    }
     // Radiators out once heat builds, folded away only when nearly cold (they are a target while out).
     if (s.heat > 25) s.radiators_extended = true;
     else if (s.heat < 8) s.radiators_extended = false;
+}
+
+/// Broadsider: closes exactly like a brawler (nose on, so the main drive does the work). Inside 40 km it starts rolling
+/// about its axis for good (a nose-on ship's beam lands on the nose cap, so this costs nothing there). From 30 s after
+/// that it turns side-on for 25 s out of every 360 s (the turn takes about 11 s, so it holds side-on for ~14 s) and
+/// returns to nose-on. Side-on, two of its three turrets bear and the enemy's beam wanders over fresh armour panels
+/// (the 0.35 factor in fire()), but the railgun, which only fires nose-on, is silent. Sweeps: any longer or more
+/// frequent stance makes it nearly unkillable by the Dagger (Earth under 30 %), and long side-on holds stalled battles.
+/// Loses the stance if the enemy opens beyond 80 km.
+void Battle::ai_broadside(Ship& s, double r, double c) {
+    constexpr double kNear = 40e3, kDelay = 30.0, kCycle = 360.0, kSideOn = 25.0;
+    if (s.ai_clock < 0 && r < kNear) s.ai_clock = time_;
+    bool engaged = s.ai_clock >= 0 && r < 2 * kNear;
+    double ph = time_ - s.ai_clock - kDelay;
+    bool side_on = engaged && ph >= 0 && std::fmod(ph, kCycle) < kSideOn;
+    s.facing = side_on ? Facing::Broadside : Facing::Nose;
+    s.roll_dir = engaged ? 1 : 0;
+    set_burn_quiet(s, approach_burn(s, r, c));
+}
+
+/// Kiter: wants to fight at a 50 km standoff, twice the brawler's range, where its railgun (70 km) still reaches but
+/// at poor odds and the enemy's laser is still at full power (lasers only fall off beyond 110 / 150 km, so a longer
+/// standoff would just let the enemy's longer-ranged laser win for free). It closes to the standoff like a brawler
+/// with a bigger hold range. Once the enemy is inside it and still closing it falls back on the OMS pods (weak, but
+/// every weapon keeps bearing), and, at most once per 200 s, turns its stern to the enemy and burns away on the main drive
+/// for up to 60 s (stern to the enemy, so nothing fires: the price of the distance). With less than 350 m/s of propellant
+/// left it fights like a brawler, which with the bounded retreats guarantees the battle ends.
+void Battle::ai_kite(Ship& s, double r, double c) {
+    constexpr double kStandoff = 50e3, kReserve = 350.0, kBurst = 60.0, kCool = 200.0;
+    if (s.dv_left < kReserve) {
+        s.ai_retreat = false;
+        s.facing = Facing::Nose;
+        set_burn_quiet(s, approach_burn(s, r, c));
+        return;
+    }
+    if (!s.ai_retreat && r < kStandoff && c > 5.0 && time_ >= s.ai_clock) {
+        s.ai_retreat = true;
+        s.ai_clock = time_ + kBurst;           // burst ends at this time
+    } else if (s.ai_retreat && (c <= 0.0 || time_ >= s.ai_clock)) {
+        s.ai_retreat = false;
+        s.ai_clock = time_ + kCool;            // no new burst before this time
+    }
+    if (s.ai_retreat) {
+        s.facing = Facing::Away;
+        set_burn_quiet(s, Burn::Away);
+    } else {
+        s.facing = Facing::Nose;
+        Burn b = Burn::Off;
+        if (r < kStandoff && c > 5.0) b = Burn::Away;                 // fall back on the OMS pods, still shooting
+        else if (r > kStandoff + 5e3) b = approach_burn(s, r, c, kStandoff);
+        set_burn_quiet(s, b);
+    }
 }
 
 void Battle::auto_repair(Ship& s) {
@@ -412,7 +556,7 @@ void Battle::move(Ship& s) {
     Vec2 to = e >= 0 ? (ships_[e].pos - s.pos).norm() : Vec2{1, 0};
     // Where the nose should point: facing order, or the burn direction while burning.
     double want = std::atan2(to.y, to.x);
-    if (s.facing == Facing::Broadside) want += kPi / 2;
+    if (s.facing == Facing::Broadside) want += s.broadside_dir * (kPi / 2);
     if (s.facing == Facing::Away) want += kPi;
     Vec2 dir{0, 0};
     double drive = s.health[static_cast<int>(Sys::Drive)] / 100.0;
@@ -798,7 +942,14 @@ void Battle::check_out(Ship& s) {
     }
 }
 
-std::uint64_t Battle::state_hash() const {
+/// Hash of the physical state only: exactly the fields the original build hashed, so golden values taken from the
+/// build before scenarios and personalities still compare.
+std::uint64_t Battle::core_hash() const { return hash_state(false); }
+/// Full hash: the physical state plus the AI state that steers future motion (style, retreat/lateral flags, phase
+/// clock, broadside side), so two battles that look alike now but will diverge never hash the same.
+std::uint64_t Battle::state_hash() const { return hash_state(true); }
+
+std::uint64_t Battle::hash_state(bool with_ai) const {
     std::uint64_t h = 1469598103934665603ull;
     auto mix = [&](double v) { std::uint64_t b; static_assert(sizeof b == sizeof v); std::memcpy(&b, &v, sizeof b); h = (h ^ b) * 1099511628211ull; };
     for (const auto& s : ships_) {
@@ -809,6 +960,7 @@ std::uint64_t Battle::state_hash() const {
         for (double v : s.turret_hp) mix(v);
         for (const Vec3& a : s.turret_aim) { mix(a.n); mix(a.r); mix(a.u); }
         mix(s.roll); mix(s.roll_dir); mix(s.crew); mix(s.ammo);
+        if (with_ai) { mix(static_cast<double>(static_cast<int>(s.style))); mix(s.ai_retreat); mix(s.ai_lateral); mix(s.broadside_dir); mix(s.ai_clock); }
     }
     mix(time_);
     return h;
