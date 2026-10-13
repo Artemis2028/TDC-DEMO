@@ -28,6 +28,18 @@ var _rad_shown := -1.0                # what the materials and pivots last showe
 var _glow_shown := -1.0
 var _rad_dead_shown := false
 var _sec_shown: Array = [Color(-2, 0, 0), Color(-2, 0, 0), Color(-2, 0, 0)]
+## Laser light. A beam in vacuum is invisible from the side (nothing scatters it), so what shows is what it does: a
+## spot on the target's hull heating from dull red to white the longer the beam dwells, and a faint glow at each
+## firing emitter. The line between them is a HUD fire-control line drawn by main.gd, not light.
+var hull_r := 5.0                     # rough hull radius and nose/tail extent along Z (local), from the hull parts
+var hull_z := Vector2(-80, 80)
+var spot: MeshInstance3D              # hot spot where beams land on this ship: core and halo, kept facing the camera
+var spot_halo: MeshInstance3D
+var spot_heat := 0.0                  # 0 cold .. 1 white hot
+var spot_key := Vector2i(-9, -9)      # what is being burnt (system, turret): a new aim point starts cold
+var spot_normal := Vector3.UP         # outward hull normal at the spot (world), to hide it on the far side
+var emitters: Array = []              # glow at each turret's emitter while it fires
+static var _glow_tex: GradientTexture2D
 var gun_breech: Node3D                # barrel ends of the spinal gun (markers from the Blender scripts)
 var gun_muzzle: Node3D
 var _shots: Array = []               # firing effects in progress: [age s, wave ring, barrel glow, muzzle flash, jet, light]
@@ -105,6 +117,18 @@ func build(is_mars: bool, gun_kind: int) -> void:
 	gun_muzzle = root.find_child("Gun_Muzzle", true, false) as Node3D
 	for i in 6:
 		sys_nodes.append(root.find_child("Sys%d" % i, true, false))
+	# Hull size, for where a beam lands on the skin: the box around the section hull parts (not radiators or turrets)
+	var box := AABB()
+	var first := true
+	for mi: MeshInstance3D in root.get_children().filter(func(n): return n is MeshInstance3D):
+		var nm := String(mi.name)
+		if not (nm.begins_with("N_") or nm.begins_with("B_") or nm.begins_with("A_")): continue
+		var bb: AABB = mi.transform * mi.get_aabb()
+		box = bb if first else box.merge(bb)
+		first = false
+	hull_r = 0.5 * minf(box.size.x, box.size.y)
+	hull_z = Vector2(box.position.z, box.end.z)
+	_build_beam_glows()
 	# OMS nozzles and their jets
 	var r := 0.026 * length
 	for tag in ["F", "A"]:
@@ -336,6 +360,114 @@ func _process(delta: float) -> void:
 func _set_alpha(mi: MeshInstance3D, alpha: float) -> void:
 	var m := mi.material_override as StandardMaterial3D
 	m.albedo_color.a = clampf(alpha, 0.0, 1.0)
+
+# ------------------------------------------------------------------ laser glows
+
+## A soft round glow texture (white centre fading to clear), shared by every glow.
+static func _glow_texture() -> GradientTexture2D:
+	if _glow_tex == null:
+		var g := Gradient.new()
+		g.set_color(0, Color(1, 1, 1, 1))
+		g.set_color(1, Color(1, 1, 1, 0))
+		g.add_point(0.25, Color(1, 1, 1, 0.75))
+		_glow_tex = GradientTexture2D.new()
+		_glow_tex.gradient = g
+		_glow_tex.fill = GradientTexture2D.FILL_RADIAL
+		_glow_tex.fill_from = Vector2(0.5, 0.5)
+		_glow_tex.fill_to = Vector2(1.0, 0.5)
+		_glow_tex.width = 64
+		_glow_tex.height = 64
+	return _glow_tex
+
+## A camera-facing additive glow quad. Drawn without the depth test so the hull doesn't cut it in half; the spot is
+## hidden instead when its side of the hull faces away from the camera (main.gd, hot_spot_faces).
+func _glow_quad(size: float) -> MeshInstance3D:
+	var q := MeshInstance3D.new()
+	var qm := QuadMesh.new()
+	qm.size = Vector2(size, size)
+	q.mesh = qm
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	m.billboard_keep_scale = true        # the node's scale sets the glow's size
+	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.no_depth_test = true
+	m.albedo_texture = _glow_texture()
+	q.material_override = m
+	q.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	q.visible = false
+	return q
+
+func _build_beam_glows() -> void:
+	spot = _glow_quad(1.0)
+	spot_halo = _glow_quad(1.0)
+	add_child(spot_halo)
+	add_child(spot)
+	for t in turrets:
+		var e := _glow_quad(1.6)
+		(e.material_override as StandardMaterial3D).albedo_color = (Color(1.0, 0.7, 0.45) if mars else Color(0.7, 0.85, 1.0)) * 1.4
+		(t[1] as Node3D).add_child(e)
+		emitters.append(e)
+
+## Emitter glows: on while that turret fires.
+func show_emitters(firing: Array) -> void:
+	for k in mini(emitters.size(), firing.size()):
+		(emitters[k] as MeshInstance3D).visible = bool(firing[k])
+
+## Where a beam aimed at system sys (turret k for the lasers) lands on this hull, seen from the shooter: on the
+## skin beside the system, on the side facing the shooter (or the end cap when the shooter is nearly on the axis).
+## Returns [local position, local outward normal].
+func beam_landing(sys: int, k: int, shooter: Vector3) -> Array:
+	var d := (global_transform.basis.inverse() * (shooter - global_position)).normalized()
+	if sys == 1 and k >= 0 and k < turrets.size():
+		var tp: Vector3 = to_local(turret_position(k))
+		var tn := Vector3(tp.x, tp.y, 0)
+		return [tp, tn.normalized() if tn.length() > 0.01 else Vector3.UP]
+	var p: Vector3 = to_local(sys_position(sys))
+	var radial := Vector3(d.x, d.y, 0)
+	if radial.length() < 0.174:           # within 10 deg of nose- or tail-on: the end cap (as the sim's centre panel)
+		var zc := hull_z.x if d.z < 0 else hull_z.y
+		return [Vector3(0, 0, zc), Vector3(0, 0, signf(d.z))]
+	radial = radial.normalized()
+	return [Vector3(0, 0, p.z) + radial * hull_r, radial]
+
+## The hot spot on this ship. beams: how many enemy beams are on it; sys, k: what they aim at; shooter: their
+## world position; dt: battle seconds this frame (0 when paused, so the glow holds). Heat climbs toward white over a
+## couple of seconds of dwell and cools in about one and a half once the beams stop.
+func update_spot(beams: int, sys: int, k: int, shooter: Vector3, dt: float) -> void:
+	if beams > 0:
+		var key := Vector2i(sys, k)
+		if key != spot_key:
+			spot_key = key
+			spot_heat = 0.0
+		var land := beam_landing(sys, k, shooter)
+		spot.position = land[0] + (land[1] as Vector3) * 0.6
+		spot_halo.position = spot.position
+		spot_normal = global_transform.basis * (land[1] as Vector3)
+		spot_heat = minf(1.0, spot_heat + dt * (1.0 - spot_heat) * (0.25 + 0.35 * beams))
+	else:
+		spot_heat = maxf(0.0, spot_heat - dt * maxf(spot_heat, 0.05) / 1.5)
+	var on := spot_heat > 0.02
+	spot.visible = on
+	spot_halo.visible = on
+	if not on: return
+	var h := spot_heat
+	# dull red to orange to near-white as the plate heats (roughly a blackbody's colours)
+	var c := Color(0.9, 0.12, 0.02).lerp(Color(1.0, 0.45, 0.08), clampf(h / 0.6, 0.0, 1.0))
+	c = c.lerp(Color(1.0, 0.92, 0.75), clampf((h - 0.6) / 0.4, 0.0, 1.0))
+	var flick := 0.92 + 0.08 * sin(Time.get_ticks_msec() * 0.05)
+	var core := (0.8 + 1.6 * h) * flick                  # a burn a metre or two across, metres of glow around it
+	spot.scale = Vector3.ONE * core
+	spot_halo.scale = Vector3.ONE * core * 2.4
+	(spot.material_override as StandardMaterial3D).albedo_color = Color(c.r, c.g, c.b, 1.0) * (1.1 + 1.6 * h)
+	var hc := c * (0.5 + 0.6 * h)
+	hc.a = 0.2 + 0.15 * h
+	(spot_halo.material_override as StandardMaterial3D).albedo_color = hc
+
+## World position of the hot spot (for the fire-control lines).
+func spot_position() -> Vector3:
+	return spot.global_position
 
 func muzzle_position(k: int) -> Vector3:
 	return (turrets[k][1] as Node3D).global_position

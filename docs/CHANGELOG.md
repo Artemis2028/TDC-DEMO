@@ -3,6 +3,12 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.9.0
+- Lasers no longer draw a glowing beam: in vacuum a beam can't be seen from the side. What shows instead:
+  - a hot spot where the beam lands, heating from dull red to white the longer it dwells and cooling once it stops;
+  - a faint glow at each firing emitter;
+  - thin dashed fire-control lines (a HUD aid, ours blue, theirs orange). B hides them for the realistic view.
+
 ## v0.8.0
 - Version numbers in the game.
 - Performance pass (docs/performance.md): merged ship meshes, cheaper shadows, sensor view and HUD at 15 Hz,
