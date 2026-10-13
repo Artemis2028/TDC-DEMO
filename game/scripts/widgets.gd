@@ -314,6 +314,7 @@ class Paper extends Control:
 					line_clicked.emit(i)
 					return
 	func set_lines(l: Array) -> void:
+		if l == lines: return       # same text: keep the drawing (arrays compare by content)
 		lines = l; queue_redraw()
 	func _draw() -> void:
 		var w := size.x
@@ -353,6 +354,8 @@ class Ball extends Control:
 		custom_minimum_size = Vector2(104, 104); size = custom_minimum_size
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
 	func set_att(r: float, o: float) -> void:
+		# redrawn only when the picture would change (65 trig points and two arcs per redraw)
+		if absf(r - roll) < 0.002 and absf(o - off_tgt) < 0.25: return
 		roll = r; off_tgt = o; queue_redraw()
 	func _draw() -> void:
 		var c := Vector2(52, 52)

@@ -46,6 +46,8 @@ var foe_roll := 0.0
 
 # EO sensor
 var eo_vp: SubViewport
+var eo_wait := 0.0               # real seconds until the EO feed renders again
+const EO_HZ := 15.0
 var eo_cam: Camera3D
 
 # player-side UI state
@@ -110,10 +112,28 @@ var scope_foot_r: W.Txt
 var shot_path := ""
 var shot_at := 0.0
 var shot_frames := 0
+var S0: Dictionary = {}        # this frame's view of our ship, the enemy and the rounds in flight (see _snap)
+var S1: Dictionary = {}
+var SHOTS: Array = []
+var snap_time := -1.0
+var snap_dirty := true
+var own_name_s := "Dagger"
+var foe_name_s := ""
+var hud_wait := 0.0             # real seconds until the slow part of the HUD refreshes
+var hud_dirty := true
+const HUD_HZ := 15.0
+var plate_hull := -1             # what the nameplate and condition badge last drew
+var cond_shown := false
+var alerts_shown := true
+var bench_frames := 0          # --bench N: frames to measure after a 60-frame warm-up
+var bench_n := 0
+var bench_sum := {}
 var shot_clicks: Array = []   # --click x,y (repeatable): synthetic clicks for checking the HUD wiring headless
 
 func _ready() -> void:
 	RenderingServer.set_default_clear_color(W.BG)
+	# Vsync stays on; the cap stops a 144-240 Hz monitor from driving the GPU flat out for a tactical view.
+	Engine.max_fps = 120
 	sfx = Sfx.new()
 	add_child(sfx)
 	if OS.get_cmdline_user_args().has("--dump-sfx"):
@@ -139,6 +159,12 @@ func _ready() -> void:
 			"--click":
 				var xy: PackedStringArray = args[i + 1].split(",")
 				shot_clicks.append(Vector2(float(xy[0]), float(xy[1])))
+	if args.has("--bench"):                # headless profiling: play N frames of a live battle, print the costs, quit
+		bench_frames = int(args[args.find("--bench") + 1])
+		Engine.max_fps = 0
+		_start(ship_class)
+		battle.set_speed(int(args[args.find("--speed") + 1]) if args.has("--speed") else 2)
+		return
 	if shot_path != "" and not args.has("--menu"):
 		_start(ship_class)
 		if args.has("--hold"): battle.set_weapons_free(false)
@@ -196,12 +222,16 @@ func _build_world() -> void:
 	sun.light_energy = 2.2
 	sun.light_color = Color(1, 0.95, 0.88)
 	# Hard sunlight casts real shadows: radiator wings across the spine, housings on the hull.
+	# Performance: hard edges (angular distance 0) skip the soft-shadow blocker search on every lit pixel, and the
+	# cascades don't blend (each pixel samples one map, not two). From Mars orbit the Sun is only 0.35 deg across,
+	# so its shadows are nearly hard anyway. Four cascades stay: with two, the thin radiator wings leak light
+	# through their seams at close range (checked side by side).
 	sun.shadow_enabled = true
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
-	sun.directional_shadow_blend_splits = true
+	sun.directional_shadow_blend_splits = false
 	sun.shadow_bias = 0.04
 	sun.shadow_normal_bias = 1.2
-	sun.light_angular_distance = 0.53      # the Sun's disc seen from Mars orbit: slightly soft edges
+	sun.light_angular_distance = 0.0
 	add_child(sun)
 	sun.look_at_from_position(Vector3.ZERO, Vector3(-0.8, -0.25, 0.6), Vector3.UP)
 	planet = MeshInstance3D.new()
@@ -215,6 +245,7 @@ func _build_world() -> void:
 	mm.albedo_color = Color(0.46, 0.2, 0.09)
 	mm.roughness = 1.0
 	planet.material_override = mm
+	planet.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF   # it never shades the ships in view
 	planet.layers = 4          # the fill light below skips the planet so its night side stays dark
 	var fill := DirectionalLight3D.new()
 	fill.light_energy = 0.25
@@ -244,7 +275,9 @@ func _build_world() -> void:
 	eo_vp = SubViewport.new()
 	eo_vp.size = Vector2i(64, 64)
 	eo_vp.world_3d = get_world_3d()
-	eo_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	# The sensor feed refreshes at EO_HZ rather than every frame: each refresh is a whole extra scene render
+	# (culling, depth, shadow cascades), and a degraded track reads fine at that rate (see _update_world).
+	eo_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
 	eo_cam = Camera3D.new()
 	eo_cam.fov = 4.0
 	eo_cam.near = 10.0
@@ -310,6 +343,10 @@ func _start(cls: int) -> void:
 	last_time = 0.0
 	heat_rate = 0.0
 	_spawn_models()
+	snap_dirty = true
+	_snap()
+	own_name_s = "ESF " + str(S0["name"])
+	foe_name_s = "MRS " + str(S1["name"]).to_upper().replace("MARS ", "")
 	state = "battle"
 	menu.visible = false
 	end_screen.visible = false
@@ -349,8 +386,8 @@ func _loop_sounds(delta: float) -> void:
 		sfx.stop_loops()
 		was_lasing = false
 		return
-	var own: Dictionary = battle.get_ship(0)
-	var foe: Dictionary = battle.get_ship(1)
+	var own: Dictionary = S0
+	var foe: Dictionary = S1
 	var n := 0
 	for f in own["turret_firing"]:
 		if f: n += 1
@@ -364,23 +401,50 @@ func _loop_sounds(delta: float) -> void:
 func _track_heat() -> void:
 	var t: float = battle.get_time()
 	if t - last_time >= 1.0:
-		var h: float = battle.get_ship(0)["heat"]
+		var h: float = S0["heat"]
 		heat_rate = lerpf(heat_rate, (h - last_heat) / (t - last_time), 0.5)
 		last_heat = h
 		last_time = t
 
+## Read the two ships and the rounds in flight from the battle once a frame. Building these Dictionaries is the
+## costly part of the bridge, so everything drawn this frame (HUD, overlays, sounds) reads the copies.
+## Click handlers that change orders still ask the battle directly, since they need the state after the order.
+## While paused nothing changes unless an order is given, so the copies are kept until the clock moves or input arrives.
+func _snap() -> void:
+	var t: float = battle.get_time()
+	if t == snap_time and not snap_dirty and not S0.is_empty(): return
+	snap_time = t
+	snap_dirty = false
+	S0 = battle.get_ship(0)
+	S1 = battle.get_ship(1)
+	SHOTS = battle.get_shots()
+
 func _process(delta: float) -> void:
+	var t0 := Time.get_ticks_usec() if bench_frames > 0 else 0
 	if state == "battle" and battle:
 		battle.advance(delta)
+	var ta := Time.get_ticks_usec()
+	if battle:
+		_snap()
+	var tb := Time.get_ticks_usec()
+	if state == "battle" and battle:
 		_drain_events()
 		_track_heat()
 		_loop_sounds(delta)
 		if battle.get_winner() >= 0 and not end_screen.visible:
 			_show_end()
+	var tc := Time.get_ticks_usec()
 	if battle:
 		_update_world(delta)
-		if hud.visible:
-			_update_hud()
+	var td := Time.get_ticks_usec()
+	if battle and hud.visible:
+		_update_hud(delta)
+	var te := Time.get_ticks_usec()
+	if bench_frames > 0 and bench_n > 60:     # --bench: time per part of the frame
+		for kv in [["adv", ta - t0], ["snap", tb - ta], ["events_snd", tc - tb], ["world", td - tc], ["hud", te - td]]:
+			bench_sum[kv[0]] = bench_sum.get(kv[0], 0.0) + kv[1] / 1000.0
+	if bench_frames > 0:
+		_bench_step(delta, Time.get_ticks_usec() - t0)
 	if shot_path != "":
 		shot_frames += 1
 		if shot_frames == 10:
@@ -408,8 +472,8 @@ func _sim_to_world(p: Vector2, origin: Vector2) -> Vector3:
 	return Vector3(d.x, 0, -d.y)
 
 func _update_world(delta: float) -> void:
-	var own: Dictionary = battle.get_ship(0)
-	var foe: Dictionary = battle.get_ship(1)
+	var own: Dictionary = S0
+	var foe: Dictionary = S1
 	var focus: Vector2 = foe["pos"] if view_target else own["pos"]
 	own_model.position = _sim_to_world(own["pos"], focus)
 	foe_model.position = _sim_to_world(foe["pos"], focus)
@@ -434,7 +498,7 @@ func _update_world(delta: float) -> void:
 		off = Vector3(cos(pitch) * sin(yaw), sin(pitch), cos(pitch) * cos(yaw)) * dist
 	cam.position = target_node.position + off
 	# Shadow map covers just the ship in view, so its resolution goes on the ship, not empty space.
-	sun.directional_shadow_max_distance = dist + 260.0
+	if absf(sun.directional_shadow_max_distance - (dist + 260.0)) > 1.0: sun.directional_shadow_max_distance = dist + 260.0
 	var fwd := (target_node.position - cam.position).normalized()
 	cam.look_at(target_node.position, Vector3.UP.rotated(fwd, -0.38))
 	# Beams and rounds. The line mesh is only rebuilt with something in it (an empty surface logs an error every frame).
@@ -445,7 +509,7 @@ func _update_world(delta: float) -> void:
 		if (foe["turret_firing"] as Array)[k]:
 			segs.append([foe_model.muzzle_position(k), own_model.position, Color(1.0, 0.45, 0.25, 0.9)])
 	shot_vis.clear()
-	for s in battle.get_shots():
+	for s in SHOTS:
 		var p := _sim_to_world(s["pos"], focus)
 		var dir := (foe_model.position - own_model.position).normalized() if int(s["shooter"]) == 0 else (own_model.position - foe_model.position).normalized()
 		var tc := Color(0.6, 0.85, 1.0) if int(s["shooter"]) == 0 else Color(1.0, 0.6, 0.25)
@@ -457,8 +521,13 @@ func _update_world(delta: float) -> void:
 		lines.surface_end()
 	# EO camera: a long lens is a camera placed close along the same line of sight, framed by the target's apparent size.
 	var q: float = battle.get_sensor_quality()
-	var res := int(clamp(12 + 180 * q * q, 12, 192))
-	eo_vp.size = Vector2i(res, res)
+	# Size snapped to 4 px steps and set only on change: a new size reallocates the render target.
+	var res := int(clamp(12 + 180 * q * q, 12, 192)) / 4 * 4
+	if eo_vp.size.x != res: eo_vp.size = Vector2i(res, res)
+	eo_wait -= delta
+	if (eo_wait <= 0.0 and hud.visible) or shot_path != "":
+		eo_wait = 1.0 / EO_HZ
+		eo_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
 	var los := (foe_model.position - own_model.position).normalized()
 	var axis := -foe_model.global_transform.basis.z.normalized()
 	var across: float = foe_model.length * sqrt(max(0.0, 1.0 - pow(los.dot(axis), 2))) + foe_model.length * 0.25
@@ -534,6 +603,8 @@ func _build_viewport() -> void:
 	view_vp.size = Vector2i(VP.size)
 	view_vp.transparent_bg = false
 	view_vp.world_3d = get_world_3d()
+	# 4x, not 2x: the hull's panel seams and radiator grid are thinner than a pixel at combat zoom, and at 2x they
+	# break into dashes (checked side by side). The shadow and draw-call savings were kept instead.
 	view_vp.msaa_3d = Viewport.MSAA_4X
 	box.add_child(view_vp)
 	cam = Camera3D.new()
@@ -560,7 +631,7 @@ func _build_top() -> void:
 		c.draw_polyline(PackedVector2Array([Vector2(0.5, 0.5), Vector2(419.5, 0.5), Vector2(391.5, 61.5), Vector2(28.5, 61.5), Vector2(0.5, 0.5)]), W.LINE, 1.0)
 		c.draw_line(Vector2(150, 61), Vector2(270, 61), W.PRI, 3)
 		if battle == null: return
-		var own: Dictionary = battle.get_ship(0)
+		var own: Dictionary = S0
 		W.text_c(c, W.FH, _own_name().to_upper(), Vector2(210, 15), 24, W.TEXT)
 		var hullf: float = own["hull"]
 		W.text_c(c, W.FM, "%s · HULL %d%%" % [_own_class(), int(hullf * 100)], Vector2(210, 35), 11, W.MUTED)
@@ -899,27 +970,44 @@ func _on_dc_line(i: int) -> void:
 
 func _own_name() -> String:
 	if battle == null: return "Dagger"
-	return "ESF " + str(battle.get_ship(0)["name"])
+	return own_name_s
 
 func _own_class() -> String:
 	if battle == null: return ""
 	return ["LASER CRUISER", "COILGUN CRUISER", "FRIGATE"][ship_class] + " · EARTH"
 
 func _foe_name() -> String:
-	return "MRS " + str(battle.get_ship(1)["name"]).to_upper().replace("MARS ", "")
+	return foe_name_s
 
-func _update_hud() -> void:
-	var own: Dictionary = battle.get_ship(0)
-	var foe: Dictionary = battle.get_ship(1)
+## HUD refresh. Every frame: only what follows the 3D view or moves smoothly (the overlay, the alerts, the
+## attitude ball). Everything else (panels, text, lamps, the teletype) refreshes at HUD_HZ, or at once after a
+## click or key, since text that changes 60 times a second can't be read anyway and costs string building.
+func _update_hud(delta: float) -> void:
+	var own: Dictionary = S0
+	var foe: Dictionary = S1
+	overlay.queue_redraw()
+	if lasing_or_popups(): alerts.queue_redraw()
+	var rel: Vector2 = Vector2(foe["pos"]) - Vector2(own["pos"])
+	var brg := rel.angle()
+	var off := rad_to_deg(wrapf(brg - float(own["heading"]), -PI, PI))
+	ball.set_att(roll_angle, off)
+	hud_wait -= delta
+	if hud_wait > 0.0 and not hud_dirty and shot_path == "": return
+	hud_wait = 1.0 / HUD_HZ
+	hud_dirty = false
 	var health: PackedFloat64Array = own["health"]
 	var fh: PackedFloat64Array = foe["health"]
 	var q: float = battle.get_sensor_quality()
 	var known := q > 0.3
 	var t: float = battle.get_time()
-	nameplate.queue_redraw()
-	cond_badge.queue_redraw()
-	overlay.queue_redraw()
-	alerts.queue_redraw()
+	var hull_pct := int(float(own["hull"]) * 100)
+	if hull_pct != plate_hull:
+		plate_hull = hull_pct
+		nameplate.queue_redraw()
+	var cond := bool(battle.get_cruise_allowed())
+	if cond != cond_shown:
+		cond_shown = cond
+		cond_badge.queue_redraw()
 	clock_scr.set_text("%03d:%02d:%02d" % [int(t) / 3600, (int(t) / 60) % 60, int(t) % 60])
 	for i in speed_btns.size():
 		(speed_btns[i] as W.Btn).set_state(i == battle.get_speed())
@@ -934,13 +1022,14 @@ func _update_hud() -> void:
 	var r0: Array = arm_rows[0]
 	var gb: W.Btn = r0[0]
 	if gun == 0:
-		gb.locked = true
-		gb.text = "SAFE"
 		(r0[1] as W.Flag).set_on(false)
 		(r0[2] as W.Txt).set_text("No gun fitted", W.FAINT)
 		(r0[3] as W.Txt).set_text("Lance only", W.FAINT)
 		(r0[4] as W.Screen).set_text("--", W.FAINT)
-		gb.queue_redraw()
+		if not gb.locked or gb.text != "SAFE":
+			gb.locked = true
+			gb.text = "SAFE"
+			gb.queue_redraw()
 	else:
 		var armed: bool = own["gun_armed"]
 		gb.set_state(armed)
@@ -957,7 +1046,6 @@ func _update_hud() -> void:
 		else: sub = "RDY · no arc/range"
 		(r0[3] as W.Txt).set_text(sub, W.HOT if gh <= 0 else W.MUTED)
 		(r0[4] as W.Screen).set_text("%02d" % int(own["ammo"]), W.PRI if armed else W.MUTED)
-		gb.queue_redraw()
 	# laser turrets: each its own row; the counter is the turret's condition
 	var thp: PackedFloat64Array = own["turret_hp"]
 	var tarm: Array = own["turret_armed"]
@@ -1055,10 +1143,6 @@ func _update_hud() -> void:
 	for i in 4:
 		(dv_scr[i] as W.Screen).set_text(dv_s[i], W.PRI if dv > 0.2 * float(own["dv_max"]) else W.HOT)
 	fuel_txt.set_text("PROPELLANT %d%%" % int(100.0 * dv / maxf(1.0, float(own["dv_max"]))))
-	var rel: Vector2 = Vector2(foe["pos"]) - Vector2(own["pos"])
-	var brg := rel.angle()
-	var off := rad_to_deg(wrapf(brg - float(own["heading"]), -PI, PI))
-	ball.set_att(roll_angle, off)
 	var hdg := int(round(rad_to_deg(wrapf(float(own["heading"]), 0, TAU)))) % 360
 	att_scr.set_text("%03d %+03d %+04d" % [hdg, 0, int(rad_to_deg(roll_angle))])
 	if foe["laser_firing"]:
@@ -1072,7 +1156,7 @@ func _update_hud() -> void:
 	# caution / warning
 	var heat: float = own["heat"]
 	var incoming := false
-	for s in battle.get_shots():
+	for s in SHOTS:
 		if int(s["shooter"]) == 1: incoming = true
 	var reps: Array = own["repairs"]
 	var states := [
@@ -1169,15 +1253,18 @@ func _update_hud() -> void:
 	paper.set_lines(pl)
 
 	# scope
-	eo_label_t1 = "EO · VIS · TRK %d%%" % int(q * 100)
-	eo_label_t2 = "components resolved" if q > 0.5 else ("outline only" if q > 0.25 else "point source")
-	scope_over.queue_redraw()
+	var l1 := "EO · VIS · TRK %d%%" % int(q * 100)
+	var l2 := "components resolved" if q > 0.5 else ("outline only" if q > 0.25 else "point source")
+	if l1 != eo_label_t1 or l2 != eo_label_t2:
+		eo_label_t1 = l1
+		eo_label_t2 = l2
+		scope_over.queue_redraw()
 	scope_foot_r.set_text("TRACK %d%%" % int(q * 100))
 
 func _draw_overlay(c: Control) -> void:
 	if battle == null: return
-	var own: Dictionary = battle.get_ship(0)
-	var foe: Dictionary = battle.get_ship(1)
+	var own: Dictionary = S0
+	var foe: Dictionary = S1
 	var q: float = battle.get_sensor_quality()
 	var known := q > 0.3
 	# mask the cut corners and draw the frame
@@ -1412,14 +1499,14 @@ func _foe_components() -> Array:
 	for i in TARGETS.size():
 		var si: int = TARGETS[i][0]
 		var tk: int = TARGETS[i][1]
-		if si == 2 and int(battle.get_ship(1)["gun"]) == 0: continue
+		if si == 2 and int(S1["gun"]) == 0: continue
 		var pos: Vector3 = foe_model.sys_position(si)
 		var lab: String = TARGETS[i][2]
 		if si == 1:
 			# one marker for the lasers, on the picked turret, or the one fire control would hit (faces us), or any live one
-			var foe: Dictionary = battle.get_ship(1)
-			var tmk: PackedInt32Array = battle.get_ship(0)["turret_mark"]   # our marks, not the truth
-			var want: int = battle.get_ship(0)["target_turret"]
+			var foe: Dictionary = S1
+			var tmk: PackedInt32Array = S0["turret_mark"]   # our marks, not the truth
+			var want: int = S0["target_turret"]
 			if want < 0:
 				var bears: Array = foe["turret_bears"]
 				for k in 3:
@@ -1429,9 +1516,14 @@ func _foe_components() -> Array:
 						if tmk[k] != 2: want = k; break
 			if want >= 0:
 				pos = foe_model.turret_position(want)
-				lab = "LSR %d" % (want + 1) if int(battle.get_ship(0)["target_turret"]) >= 0 else "LSR"
+				lab = "LSR %d" % (want + 1) if int(S0["target_turret"]) >= 0 else "LSR"
 		out.append([pos, si, tk, lab])
 	return out
+
+func _input(e: InputEvent) -> void:
+	if e is InputEventMouseButton or e is InputEventKey:   # show the result of a click at once
+		hud_dirty = true
+		snap_dirty = true
 
 func _unhandled_input(e: InputEvent) -> void:
 	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT and _click_target(e.position):
@@ -1493,10 +1585,18 @@ func _draw_tracers(c: Control) -> void:
 
 ## Alerts over the 3D view: a pulsing red LASER WARNING right above our ship while an enemy beam is on us, and callouts
 ## for major hits on our ship (round strikes, armour burn-through, systems knocked out).
+## Whether the alerts layer has anything to show (or to clear from last frame); it is redrawn only then.
+func lasing_or_popups() -> bool:
+	var busy := not popups.is_empty()
+	for f in (S1["turret_firing"] as Array): busy = busy or bool(f)
+	var need := busy or alerts_shown
+	alerts_shown = busy
+	return need
+
 func _draw_alerts(c: Control) -> void:
 	if battle == null or state != "battle" or cam == null: return
-	var own: Dictionary = battle.get_ship(0)
-	var foe: Dictionary = battle.get_ship(1)
+	var own: Dictionary = S0
+	var foe: Dictionary = S1
 	var now := Time.get_ticks_msec() / 1000.0
 	# own view: over our ship; enemy view (our ship is off screen): top centre of the view
 	var own_anchor := Vector2(402, 150) if view_target else _anchor(own_model, Vector2(402, 150))
@@ -1572,3 +1672,23 @@ static func _teletype(t: String) -> String:
 	for i in SYS_NAMES.size():
 		u = u.replace("ENEMY " + str(SYS_NAMES[i]).to_upper() + " ", "ENEMY " + str(SYS_ABBR[i]) + " ")
 	return u
+
+
+## --bench: average costs per frame over bench_frames frames of a live battle (after 60 warm-up frames), then quit.
+## Script time is the whole _process tree; frame time includes rendering. Draw calls and objects are per frame.
+func _bench_step(delta: float, script_us: int) -> void:
+	bench_n += 1
+	if bench_n <= 60: return
+	var m := {
+		"frame_ms": delta * 1000.0,
+		"script_ms": script_us / 1000.0,
+		"draw_calls": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
+		"objects": Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME),
+		"primitives": Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
+	}
+	for k in m: bench_sum[k] = bench_sum.get(k, 0.0) + m[k]
+	if bench_n == 60 + bench_frames:
+		var out := "BENCH"
+		for k in bench_sum: out += "  %s=%.3f" % [k, bench_sum[k] / bench_frames]
+		print(out)
+		get_tree().quit()
