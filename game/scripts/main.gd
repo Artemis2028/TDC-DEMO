@@ -134,6 +134,7 @@ func _ready() -> void:
 	RenderingServer.set_default_clear_color(W.BG)
 	# Vsync stays on; the cap stops a 144-240 Hz monitor from driving the GPU flat out for a tactical view.
 	Engine.max_fps = 120
+	DisplayServer.window_set_title("TDC Demo " + Version.text())
 	sfx = Sfx.new()
 	add_child(sfx)
 	if OS.get_cmdline_user_args().has("--dump-sfx"):
@@ -590,6 +591,7 @@ func _build_hud() -> void:
 	_build_left()
 	_build_right()
 	_build_bottom()
+	_add(W.Txt.new("TDC DEMO · " + Version.text(), 10, W.FAINT, true, 300), Vector2(20, 20))
 
 func _build_viewport() -> void:
 	# The 3D view (its star sky is part of the 3D world), then the drawn overlay.
@@ -1403,6 +1405,11 @@ func _build_menu() -> void:
 	v.add_child(UI.locked("Ship designer", 400))
 	v.add_child(UI.locked("Fleet battles · missiles · EW · sensors", 400))
 	v.add_child(UI.button("Support development on Patreon", _open_patreon, UI.HOT, 400))
+	var ver := UI.label(Version.text(), 12, UI.FAINT)
+	ver.position = Vector2(1440 - 16 - 400, 900 - 30)
+	ver.size = Vector2(400, 20)
+	ver.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	menu.add_child(ver)
 	v.add_child(UI.button("Quit", func(): get_tree().quit(), UI.MUTED, 400))
 	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll left/right (again to stop) · T side-on / nose-on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Right-click a target button to mark it degraded / killed · Esc menu", 12, UI.FAINT)
 	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
