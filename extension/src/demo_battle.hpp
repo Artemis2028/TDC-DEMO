@@ -18,7 +18,10 @@ protected:
 
 public:
     DemoBattle();
-    void start(int64_t seed, int64_t ship_class);
+    /// scenario 0 head-on, 1 crossing, 2 stern chase; personality 0 brawler, 1 kiter, 2 broadsider; -1 picks from the seed.
+    void start(int64_t seed, int64_t ship_class, int64_t scenario = 0, int64_t personality = 0);
+    int64_t get_scenario() const;
+    int64_t get_personality() const;
     void advance(double real_seconds);
     void set_speed(int64_t index);
     int64_t get_speed() const;

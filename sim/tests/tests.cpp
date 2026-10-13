@@ -456,6 +456,275 @@ TEST(a_killed_mark_moves_auto_fire_control_on) {
     }
 }
 
+// ---------------------------------------------------------------- scenarios and personalities
+
+static const double kPiT = 3.14159265358979323846;
+static Battle& quiet(Battle& b) {
+    // Both ships on weapons hold, the player's ship at rest and not flown by the AI: movement can be watched undisturbed.
+    const_cast<Ship&>(b.ships()[0]).weapons_free = false;
+    const_cast<Ship&>(b.ships()[1]).weapons_free = false;
+    return b;
+}
+static std::string all_events(const Battle& b) { std::string t; for (const auto& e : b.events()) t += e.text + "\n"; return t; }
+
+// Golden values taken from the build before scenarios and personalities existed (git HEAD~: state_hash then hashed only
+// the physical state). core_hash() is that same formula, so these compare directly; state_hash() now also mixes AI
+// state (style, retreat/lateral flags, phase clock, broadside side) and is not comparable with them.
+struct Golden { std::uint64_t seed; int cls; std::uint64_t hash; double t; int winner; };
+static const Golden kGoldenRuns[] = {
+    {1, 0, 0x029b42ee28c89655ull, 1980.2, 1}, {1, 1, 0x90535e28deaaca86ull, 1615.4, 1},
+    {2, 0, 0x99d4dc699ab4a939ull, 1273.7, 0}, {2, 1, 0x2f4b34371d68b0daull, 1217.5, 0},
+    {3, 0, 0x9f89f140d44dc8f4ull, 1177.2, 0}, {3, 1, 0x421aa144f4396700ull, 958.9, 0},
+};
+
+TEST(headon_brawler_matches_the_pre_scenario_build) {
+    // Whole AI-vs-AI battles, default arguments and explicit HeadOn/Brawler, against hashes from the old build.
+    for (const Golden& g : kGoldenRuns)
+        for (int explicit_args = 0; explicit_args < 2; ++explicit_args) {
+            Battle b = explicit_args ? Battle(g.seed, g.cls, 120e3, Scenario::HeadOn, Personality::Brawler) : Battle(g.seed, g.cls);
+            b.set_ai(0, true);
+            while (b.time() < 3600 && b.winner() < 0) b.step();
+            CHECK(b.core_hash() == g.hash);
+            CHECK(std::fabs(b.time() - g.t) < 0.05 && b.winner() == g.winner);
+        }
+}
+
+TEST(headon_brawler_matches_the_old_build_when_the_player_sideslips) {
+    // The player burns left for 150 s (a sideways drift), then lets the AI fly. HeadOn and SternChase must not run the
+    // Crossing scenario's drift-cancel logic, so this is the old behaviour exactly. Golden values from the old build.
+    struct Slip { std::uint64_t seed; std::uint64_t hash; double t; int winner; };
+    for (const Slip& g : {Slip{1, 0x57fb61e455b7943cull, 1674.3, 1}, Slip{2, 0x24f19cdd54fac27cull, 1815.3, 1}}) {
+        Battle b(g.seed, 0);
+        b.set_burn(0, Burn::Left, 1);
+        while (b.time() < 150) b.step();
+        b.set_burn(0, Burn::Off, 1);
+        b.set_ai(0, true);
+        while (b.time() < 3600 && b.winner() < 0) b.step();
+        CHECK(b.core_hash() == g.hash);
+        CHECK(std::fabs(b.time() - g.t) < 0.05 && b.winner() == g.winner);
+    }
+}
+
+TEST(headon_scenario_is_the_old_setup) {
+    // Default arguments are HeadOn / Brawler and the setup is unchanged: both at rest, nose to nose, 120 km apart.
+    Battle a(5, 0), b(5, 0, 120e3, Scenario::HeadOn, Personality::Brawler);
+    CHECK(a.scenario() == Scenario::HeadOn && a.personality() == Personality::Brawler);
+    CHECK(a.ships()[1].pos.x == 120e3 && a.ships()[1].pos.y == 0);
+    CHECK(a.ships()[1].vel.len() == 0 && a.ships()[0].vel.len() == 0);
+    CHECK(std::fabs(a.ships()[1].heading - kPiT) < 1e-12);
+    for (int i = 0; i < 3000; ++i) { a.set_ai(0, true); b.set_ai(0, true); a.step(); b.step(); }
+    CHECK(a.state_hash() == b.state_hash());
+}
+
+TEST(crossing_starts_mostly_sideways_to_the_line_of_sight) {
+    // The frigate's velocity relative to the player is mostly perpendicular to the line of sight: at least 100 m/s
+    // across and at most 40 m/s along (by construction exactly 40 m/s closing), which is under 40 % of the speed.
+    int starboard = 0, port = 0;
+    for (std::uint64_t seed = 1; seed <= 30; ++seed) {
+        Battle b(seed, 0, 120e3, Scenario::Crossing);
+        const Ship& p = b.ships()[0]; const Ship& f = b.ships()[1];
+        Vec2 los = (f.pos - p.pos).norm();
+        Vec2 rel = f.vel - p.vel;
+        double along = dot(rel, los), across = std::fabs(rel.x * los.y - rel.y * los.x);
+        CHECK(across >= 99.9 && across <= 160.1);
+        CHECK(std::fabs(std::fabs(along) - 40.0) < 1e-6);
+        CHECK(std::fabs(along) < 0.4 * rel.len());
+        double ang = std::fabs(std::atan2(f.pos.y, f.pos.x)) * 180 / kPiT;
+        CHECK(ang >= 19.99 && ang <= 40.01);   // off the bow
+        CHECK(b.range(0, 1) > 90e3 && b.range(0, 1) < 120e3);
+        // It crosses the bow: its sideways velocity points toward the player's axis, from the side it starts on.
+        CHECK(f.pos.y * f.vel.y < 0);
+        (f.pos.y < 0 ? starboard : port)++;
+        CHECK(all_events(b).find(f.pos.y < 0 ? "starboard" : "port") != std::string::npos);
+    }
+    CHECK(starboard > 5 && port > 5);   // both sides occur
+}
+
+TEST(stern_chase_starts_with_the_player_blind_and_the_frigate_closing) {
+    Battle b(3, 1, 120e3, Scenario::SternChase);
+    const Ship& p = b.ships()[0]; const Ship& f = b.ships()[1];
+    CHECK(f.pos.x < 0 && std::fabs(f.pos.y) < 1e-9);          // astern
+    CHECK(b.closing(0, 1) >= 20 && b.closing(0, 1) <= 40);    // and closing
+    for (int k = 0; k < kTurrets; ++k) CHECK(!b.turret_bears(0, k, 1));   // our nose points away: nothing bears on it
+    CHECK(all_events(b).find("astern") != std::string::npos);
+    // Flown by the AI, the player turns round and brings its turrets to bear within a minute.
+    b.set_ai(0, true);
+    bool bears = false;
+    for (int i = 0; i < 600 && !bears; ++i) { b.step(); for (int k = 0; k < kTurrets; ++k) bears |= b.turret_bears(0, k, 1); }
+    CHECK(bears);
+    CHECK(b.time() < 60);                         // it happened within a minute
+    while (b.time() < 90) b.step();
+    CHECK(std::fabs(p.heading) > 2.8);            // the nose now points back along -x, toward the frigate
+}
+
+TEST(kiter_holds_its_standoff_while_the_player_sits_still) {
+    // The player does nothing. A brawler would sit at 20 km; the kiter stops at 50 km instead and stays near it.
+    for (Personality pe : {Personality::Brawler, Personality::Kiter}) {
+        Battle b(4, 0, 120e3, Scenario::HeadOn, pe);
+        quiet(b);
+        double lo = 1e12, hi = 0;
+        while (b.time() < 2400) {
+            b.step();
+            if (b.time() > 1500) { lo = std::min(lo, b.range(0, 1)); hi = std::max(hi, b.range(0, 1)); }
+        }
+        std::printf("  %s range over the last 900 s: %.1f - %.1f km\n", pe == Personality::Kiter ? "kiter" : "brawler", lo / 1e3, hi / 1e3);
+        // The kiter's OMS fall-back overshoots a little inside its 50 km; the brawler's hold drifts a few km inside 20 km.
+        if (pe == Personality::Kiter) CHECK(lo > 40e3 && hi < 55e3);
+        else CHECK(lo > 12e3 && hi < 22e3);
+    }
+}
+
+TEST(kiter_falls_back_when_the_player_closes_and_follows_when_it_opens) {
+    // Player burns toward the frigate (pushing the range below the standoff): the kiter must open the range again
+    // (its closing speed falls and it burns away); then the player stops and backs off: the kiter comes back in.
+    Battle b(4, 0, 120e3, Scenario::HeadOn, Personality::Kiter);
+    quiet(b);
+    while (b.time() < 1200) b.step();                         // kiter now holding around 50 km
+    CHECK(b.range(0, 1) < 60e3);
+    double dv0 = b.ships()[1].dv_left;
+    const_cast<Ship&>(b.ships()[0]).vel = {60, 0};            // the player lunges at it
+    double rmin = 1e12;
+    while (b.time() < 1500) { b.step(); rmin = std::min(rmin, b.range(0, 1)); }
+    CHECK(b.ships()[1].dv_left < dv0 - 5);                    // it burned to get away
+    CHECK(rmin > 25e3);                                       // and kept well clear of the brawler's 20 km
+    const_cast<Ship&>(b.ships()[0]).vel = {-60, 0};           // the player runs
+    Vec2 v0 = b.ships()[1].vel;
+    while (b.time() < 2400) b.step();
+    CHECK(b.ships()[1].vel.x < v0.x);                          // the kiter has gone after it (toward -x)
+}
+
+TEST(broadsider_turns_side_on_and_rolls_once_in_range) {
+    Battle b(6, 0, 120e3, Scenario::HeadOn, Personality::Broadsider);
+    quiet(b);
+    const Ship& f = b.ships()[1];
+    double reached = -1;
+    for (int i = 0; i < 20000 && reached < 0; ++i) {
+        b.step();
+        CHECK((f.facing == Facing::Nose && f.roll_dir == 0) || b.range(0, 1) < 80e3);   // nose-on, not rolling while closing
+        if (b.range(0, 1) < 40e3) reached = b.time();
+    }
+    CHECK(reached > 0);
+    // From 30 s after reaching 40 km it turns side-on (square to the line of sight within 5 deg) and holds it for a
+    // meaningful time (at least 8 s), rolling the whole time.
+    double rolled = 0, prev_roll = f.roll, held = 0;
+    bool nose_again = false, was_side = false;
+    while (b.time() < reached + 400) {
+        b.step();
+        rolled += std::fabs(std::remainder(f.roll - prev_roll, 2 * kPiT)); prev_roll = f.roll;
+        Vec2 to = (b.ships()[0].pos - f.pos).norm();
+        double ang = std::fabs(std::fabs(std::remainder(f.heading - std::atan2(to.y, to.x), 2 * kPiT)) - kPiT / 2);
+        if (b.time() < reached + 30) CHECK(f.facing == Facing::Nose);
+        if (ang < 5 * kPiT / 180) { held += Battle::kDt; was_side = true; CHECK(f.roll_dir == 1); }
+        if (was_side && f.facing == Facing::Nose) nose_again = true;
+    }
+    CHECK(was_side && held >= 8);
+    CHECK(rolled > 0.35 * 300);       // 0.35 rad/s: well over 100 rad in 400 s means it rolled the whole time
+    CHECK(nose_again);                // and went back nose-on for the railgun
+}
+
+TEST(brawler_behaviour_is_unchanged_in_the_default_setup) {
+    // The player's own ship in watch mode is a brawler: it closes to 20 km nose-on and never rolls or turns away.
+    Battle b(2, 0);
+    quiet(b);
+    b.set_ai(0, true);
+    for (int i = 0; i < 20000; ++i) {
+        b.step();
+        CHECK(b.ships()[0].facing == Facing::Nose && b.ships()[0].roll_dir == 0);
+        CHECK(b.ships()[1].facing == Facing::Nose && b.ships()[1].roll_dir == 0);
+    }
+    CHECK(b.range(0, 1) > 12e3 && b.range(0, 1) < 22e3);
+    // And a full battle still matches the old build bit for bit (see headon_brawler_matches_the_pre_scenario_build).
+    Battle g(1, 0);
+    g.set_ai(0, true);
+    while (g.time() < 3600 && g.winner() < 0) g.step();
+    CHECK(g.core_hash() == 0x029b42ee28c89655ull && std::fabs(g.time() - 1980.2) < 0.05);
+}
+
+TEST(crossing_drift_is_cancelled_then_the_range_closes) {
+    // Weapons on hold, both ships AI-flown: the sideways speed across the line of sight falls under 25 m/s, then the
+    // ships close to well inside their starting range.
+    for (std::uint64_t seed : {1, 2, 3, 4}) {
+        Battle b(seed, 0, 120e3, Scenario::Crossing);
+        quiet(b);
+        b.set_ai(0, true);
+        const Ship& p = b.ships()[0]; const Ship& f = b.ships()[1];
+        double settled = -1;
+        bool lateral_flag = false;
+        while (b.time() < 2400) {
+            b.step();
+            Vec2 los = (f.pos - p.pos).norm();
+            Vec2 rel = f.vel - p.vel;
+            lateral_flag |= f.ai_lateral;
+            if (settled < 0 && std::fabs(rel.x * los.y - rel.y * los.x) < 25) settled = b.time();
+        }
+        CHECK(lateral_flag);                      // the AI really turned side-on to do it
+        CHECK(settled > 0 && settled < 900);
+        CHECK(b.range(0, 1) < 40e3);              // and then closed
+        CHECK(!f.ai_lateral);                     // drift-cancel is over
+    }
+}
+
+TEST(scenario_and_personality_runs_are_deterministic_and_distinct) {
+    // Same seed, scenario and personality: bit-identical. Different personality or scenario: a different battle.
+    std::vector<std::uint64_t> hashes;
+    for (int sc = 0; sc < static_cast<int>(Scenario::Count); ++sc)
+        for (int pe = 0; pe < static_cast<int>(Personality::Count); ++pe) {
+            std::uint64_t h[2];
+            for (int run_no = 0; run_no < 2; ++run_no) {
+                // Weapons on hold, so every combination runs the full 2400 s and the personalities have time to show.
+                Battle b(11, 1, 120e3, static_cast<Scenario>(sc), static_cast<Personality>(pe));
+                quiet(b);
+                b.set_ai(0, true);
+                while (b.time() < 2400) b.step();
+                h[run_no] = b.state_hash();
+            }
+            CHECK(h[0] == h[1]);
+            hashes.push_back(h[0]);
+        }
+    for (std::size_t i = 0; i < hashes.size(); ++i)
+        for (std::size_t j = i + 1; j < hashes.size(); ++j) CHECK(hashes[i] != hashes[j]);
+}
+
+TEST(picking_from_the_seed_is_stable_and_leaves_the_battle_alone) {
+    int sc[3] = {0, 0, 0}, pe[3] = {0, 0, 0};
+    for (std::uint64_t seed = 1; seed <= 300; ++seed) {
+        CHECK(pick_scenario(seed) == pick_scenario(seed) && pick_personality(seed) == pick_personality(seed));
+        sc[static_cast<int>(pick_scenario(seed))]++; pe[static_cast<int>(pick_personality(seed))]++;
+    }
+    for (int i = 0; i < 3; ++i) CHECK(sc[i] > 60 && pe[i] > 60);   // roughly a third each
+    // Calling the pickers changes nothing about a battle built afterwards.
+    Battle a(9, 0, 120e3, Scenario::Crossing, Personality::Kiter);
+    (void)pick_scenario(9); (void)pick_personality(9);
+    Battle b(9, 0, 120e3, Scenario::Crossing, Personality::Kiter);
+    a.set_ai(0, true); b.set_ai(0, true);
+    for (int i = 0; i < 2000; ++i) { a.step(); b.step(); }
+    CHECK(a.state_hash() == b.state_hash());
+}
+
+TEST(opening_event_describes_the_situation_but_not_the_personality) {
+    for (int sc = 0; sc < 3; ++sc)
+        for (int pe = 0; pe < 3; ++pe) {
+            Battle b(8, 0, 120e3, static_cast<Scenario>(sc), static_cast<Personality>(pe));
+            b.set_ai(0, true);
+            for (int i = 0; i < 6000; ++i) b.step();
+            std::string t = all_events(b);
+            for (const char* word : {"kiter", "Kiter", "brawl", "Brawl", "broadsider", "Broadsider", "personality", "standoff"})
+                CHECK(t.find(word) == std::string::npos);
+        }
+    CHECK(all_events(Battle(8, 0, 120e3, Scenario::Crossing)).find("crossing from") != std::string::npos);
+}
+
+TEST(every_scenario_and_personality_ends) {
+    for (int sc = 0; sc < 3; ++sc)
+        for (int pe = 0; pe < 3; ++pe)
+            for (std::uint64_t seed = 1; seed <= 4; ++seed) {
+                Battle b(seed, static_cast<int>(seed % 2), 120e3, static_cast<Scenario>(sc), static_cast<Personality>(pe));
+                b.set_ai(0, true);
+                while (b.time() < 3600 && b.winner() < 0) b.step();
+                CHECK(b.winner() >= 0);
+            }
+}
+
 int main() {
     for (auto& [name, fn] : registry()) { std::printf("%s\n", name); fn(); }
     std::printf(failures ? "%d FAILED\n" : "all passed\n", failures);

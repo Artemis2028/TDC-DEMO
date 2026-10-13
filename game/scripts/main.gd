@@ -119,6 +119,14 @@ var snap_time := -1.0
 var snap_dirty := true
 var own_name_s := "Dagger"
 var foe_name_s := ""
+const SCEN_NAMES := ["Random", "Head-on", "Crossing", "Stern chase"]
+## How the enemy captain fought, for the end screen (Personality order: brawler, kiter, broadsider).
+const STYLE_NAMES := ["a brawler: closed to knife range and slugged it out",
+	"a kiter: held the range and backed off when you pressed",
+	"a broadsider: turned side-on to bring every turret to bear, rolling to spread the damage"]
+var scenario_pick := -1          # menu choice for the next battle; -1 random
+var scen_btns: Array = []
+var read_calls := {}             # crew observations of the enemy's manoeuvres already made this battle (see _read_enemy)
 var hud_wait := 0.0             # real seconds until the slow part of the HUD refreshes
 var hud_dirty := true
 const HUD_HZ := 15.0
@@ -163,6 +171,7 @@ func _ready() -> void:
 	if args.has("--bench"):                # headless profiling: play N frames of a live battle, print the costs, quit
 		bench_frames = int(args[args.find("--bench") + 1])
 		Engine.max_fps = 0
+		scenario_pick = _arg_int(args, "--scenario", 0)
 		_start(ship_class)
 		battle.set_speed(int(args[args.find("--speed") + 1]) if args.has("--speed") else 2)
 		return
@@ -320,13 +329,25 @@ func _spawn_models() -> void:
 
 # ------------------------------------------------------------------ battle flow
 
+## The integer after a command-line flag, or fallback when the flag or its value is missing.
+static func _arg_int(args: PackedStringArray, flag: String, fallback: int) -> int:
+	var i := args.find(flag)
+	return int(args[i + 1]) if i >= 0 and i + 1 < args.size() else fallback
+
 func _start(cls: int) -> void:
 	ship_class = cls
 	battle = DemoBattle.new()
-	battle.start(int(Time.get_unix_time_from_system()) if shot_path == "" else 7, cls)
+	# Screenshots use a fixed seed and today's head-on brawler unless --scenario / --personality say otherwise.
+	var sargs := OS.get_cmdline_user_args()
+	var scen := scenario_pick if shot_path == "" else _arg_int(sargs, "--scenario", 0)
+	var pers := -1 if shot_path == "" else _arg_int(sargs, "--personality", 0)
+	battle.start(int(Time.get_unix_time_from_system()) if shot_path == "" else 7, cls, scen, pers)
+	read_calls.clear()
 	battle.set_speed(2)
 	ev_index = 0
 	log_lines.clear()
+	# first teletype line: where the contact is (fits the 24-character line)
+	log_lines.append([["Contact dead ahead", "Contact crossing bow", "Contact dead astern"][battle.get_scenario()], _clock(0), false, 0.0])
 	preset_mode = false
 	sel_burn = 1
 	throttle = 1.0
@@ -357,9 +378,37 @@ func _drain_events() -> void:
 			log_lines.append([str(e["text"]), _clock(float(e["time"])), true, float(e["time"])])
 		elif kind == "out" or (ship == 0 and ["hit", "burn-through", "disabled", "overheat"].has(kind)):
 			log_lines.append([str(e["text"]), _clock(float(e["time"])), false, float(e["time"])])
+	_read_enemy()
 	ev_index = battle.event_count()
 	while log_lines.size() > 6:
 		log_lines.pop_front()
+
+## The enemy captain's style for the end screen; a broadsider that never got to show it is described as such.
+func _style_text() -> String:
+	var p: int = battle.get_personality()
+	if p == 2 and not read_calls.has("broadside"):
+		return "a broadsider, though the fight ended before it turned side-on"
+	return STYLE_NAMES[clampi(p, 0, STYLE_NAMES.size() - 1)]
+
+## The crew calls out what the enemy frigate does, once each, as plain teletype lines: the player works out its
+## captain's style from these and from watching it. Nothing here comes from the AI's settings, only from its motion.
+func _read_enemy() -> void:
+	if S1.is_empty() or state != "battle": return
+	var t: float = battle.get_time()
+	var r: float = battle.get_range_km()
+	var calls := []
+	# (side-on just to kill sideways drift in a crossing isn't a broadside: its drive is pointed across, not its guns)
+	if int(S1["facing"]) == 1 and not bool(S1.get("ai_lateral", false)): calls.append(["broadside", "Enemy turning broadside"])
+	if int(S1["roll_dir"]) != 0: calls.append(["roll", "Enemy rolling"])
+	# the frigate's own motion away from us, not the range rate (which our own burn changes too)
+	var los := (Vector2(S1["pos"]) - Vector2(S0["pos"])).normalized()
+	if Vector2(S1["vel"]).dot(los) > 15.0 and int(S1["burn"]) != 0 and r < 80.0:
+		calls.append(["opening", "Enemy opening the range"])
+	if r < 25.0: calls.append(["close", "Enemy inside 25 km"])
+	for c in calls:
+		if not read_calls.has(c[0]):
+			read_calls[c[0]] = t
+			log_lines.append([c[1], _clock(t), false, t])
 
 ## What the crew hears: our own gun firing, enemy rounds striking our hull, alarms for our losses and overheating.
 func _event_sound(e: Dictionary) -> void:
@@ -1373,9 +1422,9 @@ func _overlay() -> Control:
 func _build_menu() -> void:
 	menu = _overlay()
 	var v := VBoxContainer.new()
-	v.position = Vector2(520, 90)
+	v.position = Vector2(520, 64)
 	v.size = Vector2(400, 580)
-	v.add_theme_constant_override("separation", 14)
+	v.add_theme_constant_override("separation", 11)
 	menu.add_child(v)
 	var t := UI.label("TDC", 64, UI.PRI)
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1389,6 +1438,19 @@ func _build_menu() -> void:
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.custom_minimum_size.x = 400
 	v.add_child(note)
+	# Starting situation: random by default, so each battle can open differently. The enemy captain's style is never
+	# chosen or shown here; the player reads it from how the frigate moves (and the end screen tells).
+	v.add_child(UI.header("Starting situation"))
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	scen_btns.clear()
+	for i in SCEN_NAMES.size():
+		var si := i - 1
+		var b := UI.button(SCEN_NAMES[i], func(): _pick_scenario(si), UI.PRI, 97)
+		row.add_child(b)
+		scen_btns.append(b)
+	v.add_child(row)
+	_pick_scenario(scenario_pick)
 	v.add_child(UI.header("Choose your ship"))
 	v.add_child(UI.button("Dagger · laser cruiser", func(): _start(0), UI.PRI, 400))
 	v.add_child(UI.button("Lance · laser + spinal coilgun", func(): _start(1), UI.PRI, 400))
@@ -1408,6 +1470,12 @@ func _build_menu() -> void:
 	keys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	keys.custom_minimum_size.x = 400
 	v.add_child(keys)
+
+## Menu: which starting situation the next battle uses (-1 random, else a Scenario index).
+func _pick_scenario(si: int) -> void:
+	scenario_pick = si
+	for i in scen_btns.size():
+		UI.set_active(scen_btns[i], i - 1 == si)
 
 func _show_menu() -> void:
 	state = "menu"
@@ -1445,6 +1513,7 @@ func _show_end() -> void:
 		"%s: %s" % [loser["name"], loser["out_reason"]],
 		"Your hull %d%%, crew %d of %d" % [int(float(own["hull"]) * 100), own["crew"], own["crew_max"]],
 		"Enemy hull %d%%, crew %d of %d" % [int(float(foe["hull"]) * 100), foe["crew"], foe["crew_max"]],
+		"%s start · the enemy captain was %s" % [str(SCEN_NAMES[battle.get_scenario() + 1]), _style_text()],
 	]
 	for s in lines_out:
 		var l := UI.label(s, 16, UI.TEXT)
@@ -1601,7 +1670,19 @@ func _draw_beam_lines(c: Control) -> void:
 		elif zb > zn: b = b.lerp(a, (zb - zn) / (zb - za))
 		var seg := _clip(cam.unproject_position(a), cam.unproject_position(b), view)
 		if seg.is_empty(): continue
-		c.draw_dashed_line(seg[0], seg[1], bv[2], 1.5, 7.0, false, true)
+		# Dashes built by hand and drawn in one call per line: draw_dashed_line issues a draw command per dash,
+		# thousands a frame with three long lines on screen.
+		var p0: Vector2 = seg[0]
+		var p1: Vector2 = seg[1]
+		var length := p0.distance_to(p1)
+		var dir := (p1 - p0) / maxf(length, 0.001)
+		var pts := PackedVector2Array()
+		var d := 0.0
+		while d < length:
+			pts.append(p0 + dir * d)
+			pts.append(p0 + dir * minf(d + 7.0, length))
+			d += 14.0
+		if pts.size() >= 2: c.draw_multiline(pts, bv[2], 1.5, false)
 
 ## The part of segment p-q inside rect r (Liang-Barsky), or [] if none of it is.
 static func _clip(p: Vector2, q: Vector2, r: Rect2) -> Array:
