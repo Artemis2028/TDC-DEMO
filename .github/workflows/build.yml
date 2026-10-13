@@ -32,6 +32,14 @@ jobs:
           New-Item -ItemType Directory -Force $dest | Out-Null
           Move-Item tpl\templates\* $dest
 
+      - name: Stamp the build number and commit into the version shown in the game
+        shell: pwsh
+        run: |
+          $f = "game/scripts/version.gd"
+          $b = "${{ github.run_number }} (" + "${{ github.sha }}".Substring(0, 7) + ")"
+          (Get-Content $f -Raw).Replace('const BUILD := "dev"', "const BUILD := `"$b`"") | Set-Content $f -NoNewline
+          Select-String -Path $f -Pattern "const BUILD"
+
       - name: Export the Windows build
         shell: pwsh
         run: |
