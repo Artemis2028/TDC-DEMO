@@ -15,9 +15,11 @@ Named nodes the game looks for:
   OMS_F0..3, OMS_A0..3 (radial nozzles)       OMSAX_F*, OMSAX_A* (axial nozzles)
   Gun_Coil, Gun_Rail                          Sys0..5          Nozzle (main drive exit)
   Mesh names start N_, B_ or A_ for the nose, body and aft sections (armour view tints them).
+Before export, static parts are joined by section and material (merge_static) to keep draw calls down.
 """
 import math
 import os
+import re
 import sys
 
 import bpy  # noqa: F401  (must come first: it makes bmesh and mathutils importable)
@@ -460,8 +462,70 @@ def build(mars: bool):
     return L
 
 
+# Parts the game moves, toggles or finds by name (ship_model.gd): never merged into anything.
+KEEP_SUBTREES = ("RadPivot",)                           # radiator wings fold and glow: all under them stays as is
+KEEP_NAMES = ("Lens", "B_dome", "Muzzle", "Gun_Breech", "Gun_Muzzle", "OMS_", "OMSAX_", "Nozzle", "Sys")
+GUN_HOLDERS = ("Gun_Coil", "Gun_Rail")                  # one gun is freed whole at runtime: merge only within it
+TURRET_PIVOT = re.compile(r"^(TurretBase|Turret)(\d+)$")  # gimbal pivots: merge only their direct children
+
+
+def merge_static():
+    """Join the static mesh parts into one object per (section, material) to cut draw calls.
+
+    Godot draws every surface of every MeshInstance separately in each pass (depth prepass, opaque, two shadow
+    cascades, the EO sensor view), so a ship of ~200 small parts cost ~850 draw calls a frame. The game only cares
+    about the section prefix (N_/B_/A_: the armour view tints by section) and the material of each surface, so parts
+    that share both can be one mesh. Joined objects are named <section>_hull_<material>. Parts that move stay with
+    what moves them: a spinal gun's parts join under their gun node (<section>_coil_/_rail_...), and a turret's
+    parts join under their own gimbal pivot (<section>mount<k>_... under TurretBase<k>, <section>head<k>_... under
+    Turret<k>; parts without a section prefix keep none, so the armour view still leaves them untinted). Lens<k>,
+    B_dome<k> and Muzzle<k> stay their own nodes (the game hides the lens and scorches the dome of a dead turret),
+    and radiator wings are left alone. A part with several materials joins the group of its first material and
+    brings its other surfaces along. Joining keeps world positions, the active part's parent, and normals
+    (vertices of different parts are not welded)."""
+    def holder(ob):
+        """Where a part may be merged: None (hull), a gun or turret pivot name, or "keep" (leave it alone)."""
+        if ob.parent is not None and TURRET_PIVOT.match(ob.parent.name):
+            return ob.parent.name
+        p = ob.parent
+        while p is not None:
+            if p.name.startswith(KEEP_SUBTREES) or TURRET_PIVOT.match(p.name):
+                return "keep"                           # nested deeper inside a pivot: not expected, leave it
+            if p.name in GUN_HOLDERS:
+                return p.name
+            p = p.parent
+        return None
+
+    groups = {}
+    for ob in list(bpy.data.objects):
+        if ob.type != "MESH" or ob.children or not ob.data.materials or ob.name.startswith(KEEP_NAMES):
+            continue
+        h = holder(ob)
+        if h == "keep":
+            continue
+        sec = ob.name[:2] if ob.name[:2] in ("N_", "B_", "A_") else ""
+        if sec == "" and not (h and TURRET_PIVOT.match(h)):
+            continue                                    # unsectioned hull parts are not tinted: leave them as they are
+        groups.setdefault((h, sec, ob.data.materials[0].name), []).append(ob)
+    for (h, sec, mat), obs in groups.items():
+        if len(obs) < 2:
+            continue
+        for ob in obs:                                  # join drops the modifiers (bevels) of all but one: apply them
+            if ob.modifiers:
+                with bpy.context.temp_override(object=ob, active_object=ob, selected_objects=[ob], selected_editable_objects=[ob]):
+                    for m in list(ob.modifiers):
+                        bpy.ops.object.modifier_apply(modifier=m.name)
+        with bpy.context.temp_override(active_object=obs[0], object=obs[0], selected_objects=obs, selected_editable_objects=obs):
+            bpy.ops.object.join()
+        t = TURRET_PIVOT.match(h) if h else None
+        part = "hull" if h is None else (("mount" if t.group(1) == "TurretBase" else "head") + t.group(2) if t else h[4:].lower())
+        obs[0].name = f"{sec}{part}_{mat}".replace(" ", "_").replace("|", "").replace("/", "_")[:60]
+        obs[0].data.name = obs[0].name
+
+
 def export(path, blend=None):
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    merge_static()
     bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", export_yup=True, export_apply=True,
                               export_extras=False, export_cameras=False, export_lights=False)
     if blend:

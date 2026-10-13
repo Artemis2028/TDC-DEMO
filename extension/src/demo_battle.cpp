@@ -6,6 +6,10 @@
 
 using namespace godot;
 
+// Dictionary keys built once: turning a C string into a Godot String on every key of every call was most of
+// get_ship's cost (about 60 keys, read several times a frame).
+#define KEY(name) ([]() -> const String& { static const String k(name); return k; }())
+
 DemoBattle::DemoBattle() { start(1, 0); }
 
 void DemoBattle::start(int64_t seed, int64_t ship_class) { b_ = std::make_unique<tdc::Battle>(static_cast<std::uint64_t>(seed), static_cast<int>(ship_class)); }
@@ -39,23 +43,23 @@ int64_t DemoBattle::ship_count() const { return static_cast<int64_t>(b_->ships()
 Dictionary DemoBattle::get_ship(int64_t i) const {
     const tdc::Ship& s = b_->ships()[static_cast<std::size_t>(i)];
     Dictionary d;
-    d["name"] = String::utf8(s.name.c_str());
-    d["faction"] = String::utf8(s.cls.faction.c_str());
-    d["side"] = s.side;
-    d["pos"] = Vector2(static_cast<real_t>(s.pos.x / 1000), static_cast<real_t>(s.pos.y / 1000));
-    d["vel"] = Vector2(static_cast<real_t>(s.vel.x), static_cast<real_t>(s.vel.y));
-    d["heading"] = s.heading;
-    d["heat"] = s.heat;
-    d["crew"] = s.crew; d["crew_max"] = s.cls.crew;
-    d["ammo"] = s.ammo; d["ammo_max"] = s.cls.ammo;
-    d["gun"] = static_cast<int>(s.cls.gun);
-    d["gun_cooldown"] = s.gun_cooldown; d["gun_reload"] = s.cls.gun_reload;
+    d[KEY("name")] = String::utf8(s.name.c_str());
+    d[KEY("faction")] = String::utf8(s.cls.faction.c_str());
+    d[KEY("side")] = s.side;
+    d[KEY("pos")] = Vector2(static_cast<real_t>(s.pos.x / 1000), static_cast<real_t>(s.pos.y / 1000));
+    d[KEY("vel")] = Vector2(static_cast<real_t>(s.vel.x), static_cast<real_t>(s.vel.y));
+    d[KEY("heading")] = s.heading;
+    d[KEY("heat")] = s.heat;
+    d[KEY("crew")] = s.crew; d[KEY("crew_max")] = s.cls.crew;
+    d[KEY("ammo")] = s.ammo; d[KEY("ammo_max")] = s.cls.ammo;
+    d[KEY("gun")] = static_cast<int>(s.cls.gun);
+    d[KEY("gun_cooldown")] = s.gun_cooldown; d[KEY("gun_reload")] = s.cls.gun_reload;
     PackedFloat64Array health, armor, armor_max, st, st_max;
     for (double v : s.health) health.push_back(v);
     for (int k = 0; k < tdc::kSec; ++k) { armor.push_back(s.armor[k]); armor_max.push_back(s.cls.armor[k]); st.push_back(s.structure[k]); st_max.push_back(s.cls.structure[k]); }
     PackedFloat64Array worst;
     for (int k = 0; k < tdc::kSec; ++k) worst.push_back(s.worst_panel(k));
-    d["armor_worst"] = worst;   // thinnest panel per section: where a breach shows
+    d[KEY("armor_worst")] = worst;   // thinnest panel per section: where a breach shows
     // what this ship's crew believes about its enemy: estimated health (rounded to 10) and its own kill marks
     PackedFloat64Array est, test;
     PackedInt32Array mk, tmk;
@@ -63,11 +67,11 @@ Dictionary DemoBattle::get_ship(int64_t i) const {
     for (double v : s.turret_est) test.push_back(v);
     for (auto m : s.mark) mk.push_back(static_cast<int>(m));
     for (auto m : s.turret_mark) tmk.push_back(static_cast<int>(m));
-    d["est"] = est; d["turret_est"] = test; d["mark"] = mk; d["turret_mark"] = tmk;
-    d["health"] = health; d["armor"] = armor; d["armor_max"] = armor_max; d["structure"] = st; d["structure_max"] = st_max;
-    d["hull"] = s.hull_fraction();
-    d["radiators_extended"] = s.radiators_extended;
-    d["laser_firing"] = s.laser_firing;
+    d[KEY("est")] = est; d[KEY("turret_est")] = test; d[KEY("mark")] = mk; d[KEY("turret_mark")] = tmk;
+    d[KEY("health")] = health; d[KEY("armor")] = armor; d[KEY("armor_max")] = armor_max; d[KEY("structure")] = st; d[KEY("structure_max")] = st_max;
+    d[KEY("hull")] = s.hull_fraction();
+    d[KEY("radiators_extended")] = s.radiators_extended;
+    d[KEY("laser_firing")] = s.laser_firing;
     PackedFloat64Array thp;
     Array tarm, tfire, tbear, taim;
     int foe = static_cast<int>(i) == 0 ? 1 : 0;
@@ -78,20 +82,20 @@ Dictionary DemoBattle::get_ship(int64_t i) const {
         const tdc::Vec3& a = s.turret_aim[u];   // ship axes: x along the nose, y to the right, z to the top
         taim.push_back(Vector3(static_cast<real_t>(a.n), static_cast<real_t>(a.r), static_cast<real_t>(a.u)));
     }
-    d["turret_hp"] = thp; d["turret_armed"] = tarm; d["turret_firing"] = tfire; d["turret_bears"] = tbear; d["turret_aim"] = taim;
-    d["roll"] = s.roll; d["roll_dir"] = s.roll_dir;
-    d["burning"] = s.main_firing;
-    d["oms"] = Vector2(static_cast<real_t>(s.oms_fwd), static_cast<real_t>(s.oms_left));
-    d["target_turret"] = s.target_turret;
-    d["out"] = s.out; d["out_reason"] = String::utf8(s.out_reason.c_str());
-    d["weapons_free"] = s.weapons_free; d["laser_armed"] = s.laser_armed(); d["gun_armed"] = s.gun_armed;
-    d["dv_left"] = s.dv_left; d["dv_max"] = s.cls.delta_v; d["overheated"] = s.overheated;
-    d["laser_dps"] = s.cls.laser_dps; d["gun_damage"] = s.cls.gun_damage; d["fire_mode"] = static_cast<int>(s.fire_mode); d["target_sys"] = static_cast<int>(s.target_sys);
-    d["facing"] = static_cast<int>(s.facing); d["burn"] = static_cast<int>(s.burn); d["throttle"] = s.throttle;
-    d["auto_repair"] = s.auto_repair; d["teams"] = s.repair_teams();
+    d[KEY("turret_hp")] = thp; d[KEY("turret_armed")] = tarm; d[KEY("turret_firing")] = tfire; d[KEY("turret_bears")] = tbear; d[KEY("turret_aim")] = taim;
+    d[KEY("roll")] = s.roll; d[KEY("roll_dir")] = s.roll_dir;
+    d[KEY("burning")] = s.main_firing;
+    d[KEY("oms")] = Vector2(static_cast<real_t>(s.oms_fwd), static_cast<real_t>(s.oms_left));
+    d[KEY("target_turret")] = s.target_turret;
+    d[KEY("out")] = s.out; d[KEY("out_reason")] = String::utf8(s.out_reason.c_str());
+    d[KEY("weapons_free")] = s.weapons_free; d[KEY("laser_armed")] = s.laser_armed(); d[KEY("gun_armed")] = s.gun_armed;
+    d[KEY("dv_left")] = s.dv_left; d[KEY("dv_max")] = s.cls.delta_v; d[KEY("overheated")] = s.overheated;
+    d[KEY("laser_dps")] = s.cls.laser_dps; d[KEY("gun_damage")] = s.cls.gun_damage; d[KEY("fire_mode")] = static_cast<int>(s.fire_mode); d[KEY("target_sys")] = static_cast<int>(s.target_sys);
+    d[KEY("facing")] = static_cast<int>(s.facing); d[KEY("burn")] = static_cast<int>(s.burn); d[KEY("throttle")] = s.throttle;
+    d[KEY("auto_repair")] = s.auto_repair; d[KEY("teams")] = s.repair_teams();
     Array reps;
-    for (const auto& r : s.repairs) { Dictionary rd; rd["sys"] = static_cast<int>(r.sys); rd["left"] = r.left; rd["total"] = r.total; reps.push_back(rd); }
-    d["repairs"] = reps;
+    for (const auto& r : s.repairs) { Dictionary rd; rd[KEY("sys")] = static_cast<int>(r.sys); rd[KEY("left")] = r.left; rd[KEY("total")] = r.total; reps.push_back(rd); }
+    d[KEY("repairs")] = reps;
     return d;
 }
 
@@ -106,8 +110,8 @@ Array DemoBattle::get_events(int64_t from) const {
     const auto& ev = b_->events();
     for (std::size_t k = static_cast<std::size_t>(from < 0 ? 0 : from); k < ev.size(); ++k) {
         Dictionary d;
-        d["time"] = ev[k].time; d["ship"] = ev[k].ship;
-        d["kind"] = String::utf8(ev[k].kind.c_str()); d["text"] = String::utf8(ev[k].text.c_str());
+        d[KEY("time")] = ev[k].time; d[KEY("ship")] = ev[k].ship;
+        d[KEY("kind")] = String::utf8(ev[k].kind.c_str()); d[KEY("text")] = String::utf8(ev[k].text.c_str());
         a.push_back(d);
     }
     return a;
@@ -117,9 +121,9 @@ Array DemoBattle::get_shots() const {
     Array a;
     for (const auto& s : b_->shots()) {
         Dictionary d;
-        d["pos"] = Vector2(static_cast<real_t>(s.pos.x / 1000), static_cast<real_t>(s.pos.y / 1000));
-        d["kind"] = static_cast<int>(s.kind);
-        d["shooter"] = s.shooter;
+        d[KEY("pos")] = Vector2(static_cast<real_t>(s.pos.x / 1000), static_cast<real_t>(s.pos.y / 1000));
+        d[KEY("kind")] = static_cast<int>(s.kind);
+        d[KEY("shooter")] = s.shooter;
         a.push_back(d);
     }
     return a;

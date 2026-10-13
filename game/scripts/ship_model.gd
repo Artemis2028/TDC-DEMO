@@ -24,6 +24,10 @@ const DRIVE_PLUME_MAX := 140.0
 const OMS_PLUME_LENGTH := 5.0
 var sys_nodes: Array = []
 var _rad_open := 1.0
+var _rad_shown := -1.0                # what the materials and pivots last showed, so they are written only on change
+var _glow_shown := -1.0
+var _rad_dead_shown := false
+var _sec_shown: Array = [Color(-2, 0, 0), Color(-2, 0, 0), Color(-2, 0, 0)]
 var gun_breech: Node3D                # barrel ends of the spinal gun (markers from the Blender scripts)
 var gun_muzzle: Node3D
 var _shots: Array = []               # firing effects in progress: [age s, wave ring, barrel glow, muzzle flash, jet, light]
@@ -41,7 +45,10 @@ func build(is_mars: bool, gun_kind: int) -> void:
 	var root: Node3D = (load("res://models/mars.glb" if mars else "res://models/earth.glb") as PackedScene).instantiate()
 	add_child(root)
 	var grid := _grid_texture()
-	# materials: each mesh gets its own copies so tinting one ship never touches the other
+	# Materials: this ship gets its own copies so tinting one ship never touches the other. One copy per source
+	# material and role (section, radiator panel), shared by every surface that uses it: far fewer materials to
+	# update and to switch between when drawing. Turret domes keep one each, since a dead turret's dome is scorched.
+	var copies := {}
 	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
 		var sec := -1
 		var n := String(mi.name)
@@ -52,7 +59,13 @@ func build(is_mars: bool, gun_kind: int) -> void:
 		for si in mi.mesh.get_surface_count():
 			var src := mi.get_active_material(si) as StandardMaterial3D
 			if src == null: continue
+			var rad_panel := radiator and n.begins_with("Rad") and n.length() < 14
+			var key := "%d/%d/%s/%s" % [src.get_instance_id(), sec, radiator, n if n.begins_with("B_dome") else ("P" if rad_panel else "")]
+			if copies.has(key):
+				mi.set_surface_override_material(si, copies[key])
+				continue
 			var m := src.duplicate() as StandardMaterial3D
+			copies[key] = m
 			if radiator:
 				if n.begins_with("Rad") and n.length() < 14:
 					m.albedo_texture = grid           # generated panels carry no texture of their own
@@ -64,6 +77,10 @@ func build(is_mars: bool, gun_kind: int) -> void:
 					m.emission_energy_multiplier = 0.0
 					radiators.append([m, m.albedo_color])
 			elif sec >= 0 and not m.emission_enabled:
+				# Emission stays switched on (black in the normal view): toggling it would compile a new shader
+				# variant, a hitch, the first time the armour view opens.
+				m.emission_enabled = true
+				m.emission = Color.BLACK
 				sec_parts[sec].append([m, m.albedo_color])
 			mi.set_surface_override_material(si, m)
 	for p: Node3D in root.find_children("RadPivot*", "Node3D", true, false):
@@ -77,8 +94,13 @@ func build(is_mars: bool, gun_kind: int) -> void:
 		var base := root.find_child("TurretBase%d" % k, true, false) as Node3D
 		turrets.append([piv, root.find_child("Muzzle%d" % k, true, false), lens, dm, dm.albedo_color, base, base.basis, piv.basis, 0.0])
 	# guns: both kinds are in the model; show the one this ship carries
-	(root.find_child("Gun_Coil", true, false) as Node3D).visible = gun_kind == 2
-	(root.find_child("Gun_Rail", true, false) as Node3D).visible = gun_kind == 1
+	# (the other one is freed, not just hidden, so it costs nothing to cull or shadow)
+	var coil := root.find_child("Gun_Coil", true, false) as Node3D
+	var rail := root.find_child("Gun_Rail", true, false) as Node3D
+	for g: Node3D in [coil, rail]:
+		if g != (coil if gun_kind == 2 else rail if gun_kind == 1 else null):
+			g.get_parent().remove_child(g)
+			g.free()
 	gun_breech = root.find_child("Gun_Breech", true, false) as Node3D
 	gun_muzzle = root.find_child("Gun_Muzzle", true, false) as Node3D
 	for i in 6:
@@ -355,26 +377,35 @@ func show_state(s: Dictionary, delta: float) -> void:
 				c = Color(0.25, 0.75, 0.55).lerp(Color(0.95, 0.65, 0.2), 1.0 - af)
 			else:
 				c = Color(0.95, 0.45, 0.15).lerp(Color(0.85, 0.1, 0.08), 1.0 - sf)
+		# Material writes only when the tint changes (each write re-uploads the material's parameters).
+		var key := c if view_mode == 1 else Color(-1, -1, -1)
+		if key == _sec_shown[k]: continue
+		_sec_shown[k] = key
 		for part in sec_parts[k]:
 			var m: StandardMaterial3D = part[0]
 			if view_mode == 1:
 				m.albedo_color = c
-				m.emission_enabled = true
 				m.emission = c * 0.35
 			else:
 				m.albedo_color = part[1]
-				m.emission_enabled = false
+				m.emission = Color.BLACK
 	# radiators fold flat against the hull when stowed, and glow as heat climbs
 	var target := 1.0 if s["radiators_extended"] else 0.0
 	_rad_open = move_toward(_rad_open, target, delta * 0.8)
 	var health: PackedFloat64Array = s["health"]
 	var glow: float = clamp((float(s["heat"]) - 30.0) / 70.0, 0.0, 1.0) * 1.5
-	for p: Node3D in rad_pivots:
-		p.scale = Vector3(max(0.04, _rad_open), 1, 1)
-	for rd in radiators:
-		var m: StandardMaterial3D = rd[0]
-		m.emission_energy_multiplier = glow
-		m.albedo_color = rd[1] if health[4] > 0 else Color(0.3, 0.06, 0.04)
+	if _rad_open != _rad_shown:
+		_rad_shown = _rad_open
+		for p: Node3D in rad_pivots:
+			p.scale = Vector3(max(0.04, _rad_open), 1, 1)
+	var rad_dead: bool = health[4] <= 0
+	if absf(glow - _glow_shown) > 0.004 or rad_dead != _rad_dead_shown:
+		_glow_shown = glow
+		_rad_dead_shown = rad_dead
+		for rd in radiators:
+			var m: StandardMaterial3D = rd[0]
+			m.emission_energy_multiplier = glow
+			m.albedo_color = rd[1] if not rad_dead else Color(0.3, 0.06, 0.04)
 	plume.visible = s["burning"]
 	if plume.visible:
 		var th: float = clampf(float(s["throttle"]), 0.0, 1.0)
@@ -393,4 +424,5 @@ func show_state(s: Dictionary, delta: float) -> void:
 		(turrets[k][2] as MeshInstance3D).visible = not dead
 		var dm: StandardMaterial3D = turrets[k][3]
 		if view_mode == 0:
-			dm.albedo_color = Color(0.22, 0.08, 0.05) if dead else turrets[k][4]
+			var dc: Color = Color(0.22, 0.08, 0.05) if dead else turrets[k][4]
+			if dm.albedo_color != dc: dm.albedo_color = dc
