@@ -682,7 +682,8 @@ func _add_tooltips() -> void:
 	# (no tooltip on the EO scope itself: clicks on it go to _unhandled_input to pick targets, and a tooltip
 	# control there would swallow them; the footer label carries the hint instead)
 	tip.call(scope_foot_l, "EO telescope: what your sensors actually see. Poor tracking shows as big pixels;\ncloser in it resolves the enemy's parts, which you can click to target.")
-	for i in speed_btns.size(): tip.call(speed_btns[i], "Time compression (P pauses, , and . step). Fast time drops back to 1× when weapons come into range.")
+	for i in speed_btns.size() - 1: tip.call(speed_btns[i], "Time compression (P pauses, , and . step).")
+	tip.call(speed_btns[-1], "Cruise and orbital transfers: not in this demo.\nThe demo battle starts close in, on a flat plane with no gravity. In the full game you plan\nthe transfer to the fight around a planet's gravity, and cruise through the long coast.")
 	var view_tips := ["Look at your own ship.", "Look at the enemy as your EO sensors see it; click its parts to target them.",
 		"Chase camera behind your ship (C).", "Tactical plot (V): ranges, velocities and the closest approach, top-down.",
 		"Real colour.", "Armour view: each section tinted by its thinnest panel.", "", ""]
@@ -761,7 +762,12 @@ func _build_viewport() -> void:
 	_add(W.Txt.new("TIME", 10, W.FAINT, true, 40), Vector2(x - 42, VP.position.y + 22))
 	for i in SPEED_NAMES.size():
 		var idx := i
-		speed_btns.append(_btn("tab", SPEED_NAMES[i], Vector2(x + i * 44, VP.position.y + 16), Vector2(42, 26), func(): battle.set_speed(idx)))
+		if i == SPEED_NAMES.size() - 1:
+			# Cruise belongs with orbital transfers, which the demo doesn't have: its battles start inside weapon range on
+			# a flat, gravity-free plane. Shown crossed out, like the other features still to come.
+			speed_btns.append(_locked("tab", SPEED_NAMES[i], Vector2(x + i * 44, VP.position.y + 16), Vector2(42, 26)))
+		else:
+			speed_btns.append(_btn("tab", SPEED_NAMES[i], Vector2(x + i * 44, VP.position.y + 16), Vector2(42, 26), func(): battle.set_speed(idx)))
 	drop_txt = W.Txt.new("", 10, W.PRI, true, 330)
 	drop_txt.align = HORIZONTAL_ALIGNMENT_RIGHT
 	_add(drop_txt, Vector2(VP.end.x - 18 - 330, VP.position.y + 48))
@@ -1164,10 +1170,6 @@ func _update_hud(delta: float) -> void:
 	clock_scr.set_text("%03d:%02d:%02d" % [int(t) / 3600, (int(t) / 60) % 60, int(t) % 60])
 	for i in speed_btns.size():
 		(speed_btns[i] as W.Btn).set_state(i == battle.get_speed())
-	var cruise_b: W.Btn = speed_btns[6]
-	if cruise_b.locked == battle.get_cruise_allowed():
-		cruise_b.locked = not battle.get_cruise_allowed()
-		cruise_b.queue_redraw()
 	drop_txt.set_text(str(battle.get_drop_reason()).to_upper())
 
 	# armament: row 0 the gun, row 1 the laser
@@ -1568,7 +1570,7 @@ func _build_menu() -> void:
 	v.add_child(UI.button("Watch an AI battle", _watch_ai, UI.SEC, 400))
 	v.add_child(UI.header("Coming soon", UI.FAINT))
 	v.add_child(UI.locked("Ship designer", 400))
-	v.add_child(UI.locked("Fleet battles · missiles · EW · sensors", 400))
+	v.add_child(UI.locked("Orbital transfers · fleets · missiles · EW", 400))
 	v.add_child(UI.button("Support development on Patreon", _open_patreon, UI.HOT, 400))
 	var ver := UI.label(Version.text(), 12, UI.FAINT)
 	ver.position = Vector2(1440 - 16 - 400, 900 - 30)
@@ -1751,7 +1753,7 @@ func _unhandled_input(e: InputEvent) -> void:
 		match e.keycode:
 			KEY_SPACE: _toggle_free()
 			KEY_P: battle.set_speed(0 if battle.get_speed() != 0 else 2)
-			KEY_PERIOD: battle.set_speed(battle.get_speed() + 1)
+			KEY_PERIOD: battle.set_speed(mini(battle.get_speed() + 1, SPEED_NAMES.size() - 2))   # cruise is locked in the demo
 			KEY_COMMA: battle.set_speed(max(1, battle.get_speed() - 1))
 			KEY_TAB:
 				view_target = not view_target
