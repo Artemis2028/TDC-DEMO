@@ -32,8 +32,8 @@ var alerts: Control
 var shot_vis: Array = []          # gun rounds in flight this frame: [world position, direction, colour], for the tracer
 var popups: Array = []            # hit callouts over the ships: [ship 0/1, headline, detail, colour, real time made, battle time]
 var sun: DirectionalLight3D
-var lines: ImmediateMesh
-var line_mat: StandardMaterial3D
+var beam_vis: Array = []         # lasers firing this frame: [emitter world position, hot spot world position, colour]
+var fc_lines := true             # B: show the fire-control lines (a HUD aid; the beams themselves are invisible)
 var yaw := 0.9
 var pitch := 0.42
 var dist := 320.0
@@ -209,7 +209,7 @@ func _build_world() -> void:
 	env.ssao_intensity = 2.5
 	env.ssao_power = 1.6
 	env.ssao_detail = 0.5
-	# Bloom on anything brighter than white: drive plume, laser beams, hot radiators, lit muzzles.
+	# Bloom on anything brighter than white: drive plume, laser hot spots, hot radiators, lit muzzles.
 	env.glow_enabled = true
 	env.glow_hdr_threshold = 1.6
 	env.glow_intensity = 0.5
@@ -262,16 +262,6 @@ func _build_world() -> void:
 	add_child(shine)
 	shine.look_at_from_position(Vector3.ZERO, Vector3(0.15, 1.0, 0.1), Vector3.FORWARD)
 	add_child(planet)
-	lines = ImmediateMesh.new()
-	line_mat = StandardMaterial3D.new()
-	line_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	line_mat.vertex_color_use_as_albedo = true
-	line_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	var li := MeshInstance3D.new()
-	li.mesh = lines
-	li.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	li.layers = 2          # beams and round streaks are HUD overlays, not something the EO camera sees
-	add_child(li)
 	# EO sensor: a camera of its own, rendered small and blown up, so poor quality shows as big pixels.
 	eo_vp = SubViewport.new()
 	eo_vp.size = Vector2i(64, 64)
@@ -502,24 +492,31 @@ func _update_world(delta: float) -> void:
 	if absf(sun.directional_shadow_max_distance - (dist + 260.0)) > 1.0: sun.directional_shadow_max_distance = dist + 260.0
 	var fwd := (target_node.position - cam.position).normalized()
 	cam.look_at(target_node.position, Vector3.UP.rotated(fwd, -0.38))
-	# Beams and rounds. The line mesh is only rebuilt with something in it (an empty surface logs an error every frame).
-	var segs: Array = []
+	# Lasers: no visible beam (see ShipModel), but a hot spot where it lands, a faint glow at each firing emitter, and
+	# fire-control lines between them drawn on the overlay (_draw_beam_lines).
+	var dtb := delta * battle_speed() if shot_path == "" else 0.1    # screenshots: let the spot heat up while posing
+	var own_fire: Array = own["turret_firing"]
+	var foe_fire: Array = foe["turret_firing"]
+	own_model.show_emitters(own_fire)
+	foe_model.show_emitters(foe_fire)
+	foe_model.update_spot(own_fire.count(true), int(own["target_sys"]), int(own["target_turret"]), own_model.position, dtb)
+	own_model.update_spot(foe_fire.count(true), int(foe["target_sys"]), int(foe["target_turret"]), foe_model.position, dtb)
+	beam_vis.clear()
 	for k in 3:
-		if (own["turret_firing"] as Array)[k]:
-			segs.append([own_model.muzzle_position(k), foe_model.position, Color(0.55, 0.85, 1.0, 0.9)])
-		if (foe["turret_firing"] as Array)[k]:
-			segs.append([foe_model.muzzle_position(k), own_model.position, Color(1.0, 0.45, 0.25, 0.9)])
+		if own_fire[k]: beam_vis.append([own_model.muzzle_position(k), foe_model.spot_position(), Color(0.55, 0.85, 1.0, 0.8)])
+		if foe_fire[k]: beam_vis.append([foe_model.muzzle_position(k), own_model.spot_position(), Color(1.0, 0.5, 0.3, 0.8)])
+	# A spot on the far side of the hull from the camera is hidden. The glow is wider than the hull's curve, so it
+	# still shows when its side is turned up to about 20 deg away (and an end cap seen edge-on).
+	for m: ShipModel in [own_model, foe_model]:
+		var face := m.spot_normal.dot((cam.position - m.spot_position()).normalized()) > -0.35
+		m.spot.visible = m.spot.visible and face
+		m.spot_halo.visible = m.spot.visible
 	shot_vis.clear()
 	for s in SHOTS:
 		var p := _sim_to_world(s["pos"], focus)
 		var dir := (foe_model.position - own_model.position).normalized() if int(s["shooter"]) == 0 else (own_model.position - foe_model.position).normalized()
 		var tc := Color(0.6, 0.85, 1.0) if int(s["shooter"]) == 0 else Color(1.0, 0.6, 0.25)
 		shot_vis.append([p, dir, tc])
-	lines.clear_surfaces()
-	if not segs.is_empty():
-		lines.surface_begin(Mesh.PRIMITIVE_LINES, line_mat)
-		for sg in segs: _seg(sg[0], sg[1], sg[2])
-		lines.surface_end()
 	# EO camera: a long lens is a camera placed close along the same line of sight, framed by the target's apparent size.
 	var q: float = battle.get_sensor_quality()
 	# Size snapped to 4 px steps and set only on change: a new size reallocates the render target.
@@ -535,12 +532,6 @@ func _update_world(delta: float) -> void:
 	var half: float = max(12.0, across * 0.65)
 	eo_cam.position = foe_model.position - los * (half / tan(deg_to_rad(2.0)))
 	eo_cam.look_at(foe_model.position, Vector3.UP)
-
-func _seg(a: Vector3, b: Vector3, c: Color) -> void:
-	lines.surface_set_color(c)
-	lines.surface_add_vertex(a)
-	lines.surface_set_color(c)
-	lines.surface_add_vertex(b)
 
 func battle_speed() -> float:
 	return [0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0][battle.get_speed()]
@@ -1283,6 +1274,7 @@ func _draw_overlay(c: Control) -> void:
 	var sub := ("click a part to target it" if battle.get_sensor_quality() > 0.3 else "EO can't resolve parts yet: close the range") if view_target else "right-drag to orbit · wheel to zoom · C chase cam · Tab enemy view"
 	c.draw_string(W.FM, Vector2(40, 56), sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, W.MUTED)
 	_draw_tracers(c)
+	_draw_beam_lines(c)
 	var health: PackedFloat64Array = own["health"]
 	var fh: PackedFloat64Array = foe["health"]
 	if not view_target:
@@ -1411,7 +1403,7 @@ func _build_menu() -> void:
 	ver.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	menu.add_child(ver)
 	v.add_child(UI.button("Quit", func(): get_tree().quit(), UI.MUTED, 400))
-	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll left/right (again to stop) · T side-on / nose-on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Right-click a target button to mark it degraded / killed · Esc menu", 12, UI.FAINT)
+	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll left/right (again to stop) · T side-on / nose-on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · B fire-control lines · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Right-click a target button to mark it degraded / killed · Esc menu", 12, UI.FAINT)
 	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	keys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	keys.custom_minimum_size.x = 400
@@ -1550,6 +1542,7 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_COMMA: battle.set_speed(max(1, battle.get_speed() - 1))
 			KEY_TAB: view_target = not view_target
 			KEY_C: chase = not chase
+			KEY_B: fc_lines = not fc_lines
 			KEY_Q: _helm("roll-")
 			KEY_E: _helm("roll+")
 			KEY_T: _helm("side")
@@ -1589,6 +1582,43 @@ func _draw_tracers(c: Control) -> void:
 		c.draw_circle(hp, 6.0, Color(col, 0.25))
 		c.draw_circle(hp, 3.2, Color(col.lerp(Color.WHITE, 0.5), 0.85))
 		c.draw_circle(hp, 1.6, Color.WHITE)
+
+## Fire-control lines: a thin dashed line from each firing emitter to where its beam lands, in the HUD's side
+## colours (ours blue, theirs orange). It is a display aid like a radar track line, not the beam: a laser in vacuum
+## can't be seen from the side. B turns them off for the realistic view (spot and emitter glow only).
+func _draw_beam_lines(c: Control) -> void:
+	if not fc_lines or beam_vis.is_empty(): return
+	var view := Rect2(Vector2(2, 2), VP.size - Vector2(4, 4))
+	var to_cam := cam.global_transform.affine_inverse()
+	var zn := -cam.near * 2.0
+	for bv in beam_vis:
+		var a: Vector3 = bv[0]
+		var b: Vector3 = bv[1]
+		var za := (to_cam * a).z
+		var zb := (to_cam * b).z
+		if za > zn and zb > zn: continue                   # both ends behind the camera
+		if za > zn: a = a.lerp(b, (za - zn) / (za - zb))   # pull the end behind the camera up to just in front
+		elif zb > zn: b = b.lerp(a, (zb - zn) / (zb - za))
+		var seg := _clip(cam.unproject_position(a), cam.unproject_position(b), view)
+		if seg.is_empty(): continue
+		c.draw_dashed_line(seg[0], seg[1], bv[2], 1.5, 7.0, false, true)
+
+## The part of segment p-q inside rect r (Liang-Barsky), or [] if none of it is.
+static func _clip(p: Vector2, q: Vector2, r: Rect2) -> Array:
+	var t0 := 0.0
+	var t1 := 1.0
+	var d := q - p
+	for e in [[-d.x, p.x - r.position.x], [d.x, r.end.x - p.x], [-d.y, p.y - r.position.y], [d.y, r.end.y - p.y]]:
+		var pp: float = e[0]
+		var qq: float = e[1]
+		if absf(pp) < 1e-9:
+			if qq < 0.0: return []
+			continue
+		var t := qq / pp
+		if pp < 0.0: t0 = maxf(t0, t)
+		else: t1 = minf(t1, t)
+		if t0 > t1: return []
+	return [p + d * t0, p + d * t1]
 
 ## Alerts over the 3D view: a pulsing red LASER WARNING right above our ship while an enemy beam is on us, and callouts
 ## for major hits on our ship (round strikes, armour burn-through, systems knocked out).

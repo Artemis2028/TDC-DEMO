@@ -5,9 +5,9 @@ class_name Version
 ## BUILD is stamped by the CI build (.github/workflows/build.yml): the run number and the commit. "dev" means a
 ## local, unstamped build.
 
-const NUMBER := "0.8.0"
+const NUMBER := "0.9.0"
 const BUILD := "dev"
 
-## "v0.8.0 · build 52 (68ab2ea)", or "v0.8.0 · dev" for a local build.
+## "v0.9.0 · build 54 (1a2b3c4)", or "v0.9.0 · dev" for a local build.
 static func text() -> String:
 	return "v%s · %s" % [NUMBER, BUILD if BUILD == "dev" else "build " + BUILD]
