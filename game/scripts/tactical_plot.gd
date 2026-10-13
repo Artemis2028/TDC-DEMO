@@ -439,6 +439,8 @@ func _draw_static(ci: CanvasItem) -> void:
 	ci.draw_string(_fm, Vector2(0, y), "THIN = OWN VELOCITY, BOLD = RELATIVE", HORIZONTAL_ALIGNMENT_RIGHT, rw, 10, W.FAINT)
 	ci.draw_string(_fm, Vector2(0, y - 14), _s_scale, HORIZONTAL_ALIGNMENT_RIGHT, rw, 11, W.FAINT)
 	ci.draw_string(_fm, Vector2(0, y - 28), "NORTH-UP, SIM FRAME, OUR SHIP AT CENTRE", HORIZONTAL_ALIGNMENT_RIGHT, rw, 11, W.FAINT)
+	# The demo's battle space has no gravity: straight-line motion, so this is a relative-motion plot, not an orbit view.
+	ci.draw_string(_fm, Vector2(0, y - 44), "DEMO: FLAT SPACE, NO GRAVITY · ORBITS IN THE FULL GAME", HORIZONTAL_ALIGNMENT_RIGHT, rw, 10, W.MUTED)
 	if off != "":
 		ci.draw_string(_fm, Vector2(14, y), "OFF PLOT: " + off, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, W.FAINT)
 	ci.draw_line(Vector2(10, size.y - LEG_H), Vector2(size.x - 10, size.y - LEG_H), W.LINE, 1.0)
@@ -536,10 +538,10 @@ func _draw() -> void:
 		_ship_glyph(ep, _h1, W.HOT)
 
 	# Text: header top-left, arrow scale top-right, legend bottom.
-	draw_string(_fh, Vector2(14, 22), "TACTICAL PLOT", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, W.MUTED)
+	draw_string(_fh, Vector2(14, 22), "TACTICAL PLOT · RELATIVE MOTION", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, W.MUTED)
 	draw_string(_fm, Vector2(14, 42), _s_cpa, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, cpa_col if _cpa_valid else W.MUTED)
 	# arrow scale: with the key, bottom-right (the top-right corner holds the time-compression buttons)
-	draw_string(_fm, Vector2(0, size.y - LEG_H - 8.0 - 44.0), _s_arrow, HORIZONTAL_ALIGNMENT_RIGHT, size.x - 14.0, 12, W.PRI)
+	draw_string(_fm, Vector2(0, size.y - LEG_H - 8.0 - 62.0), _s_arrow, HORIZONTAL_ALIGNMENT_RIGHT, size.x - 14.0, 12, W.PRI)
 	W.text_c(self, _fm, _s_leg, Vector2(size.x * 0.5, size.y - LEG_H * 0.5), 14, W.TEXT)
 	prof_usec += Time.get_ticks_usec() - t0
 	prof_n += 1

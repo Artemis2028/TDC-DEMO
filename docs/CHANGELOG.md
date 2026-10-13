@@ -3,6 +3,12 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.11.1
+- Cruise (CRZ) is crossed out as not in the demo. Battles start inside weapon range on a flat, gravity-free plane, so
+  it could never engage. Its tooltip explains that cruise and orbital transfers come with the full game.
+- The tactical plot is labelled as a relative-motion plot with a note that the demo has no gravity or orbits.
+- The menu's coming-soon list now names orbital transfers.
+
 ## v0.11.0
 - **Tactical plot** (V, or the PLOT view button): a top-down picture of the engagement.
   - Range rings, both ships' velocities and the relative velocity.
