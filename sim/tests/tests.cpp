@@ -518,7 +518,14 @@ TEST(headon_brawler_matches_the_old_build_when_the_player_sideslips) {
     // The player burns left for 150 s (a sideways drift), then lets the AI fly. HeadOn and SternChase must not run the
     // Crossing scenario's drift-cancel logic, so this is the old behaviour exactly. Golden values as above (re-taken at v0.12.0).
     struct Slip { std::uint64_t seed; std::uint64_t hash; double t; int winner; };
-    for (const Slip& g : {Slip{1, 0x8ab2f9687cc807d5ull, 1671.7, 1}, Slip{2, 0xfbd8157f10e651bdull, 1607.0, 1}}) {
+    // Seed 1's 1670 s battle ends the same on every compiler but its last bits differ under MSVC (its maths library
+    // rounds a few results differently from glibc's), so it carries one golden hash per toolchain.
+#ifdef _MSC_VER
+    constexpr std::uint64_t kSlip1 = 0x02aa14e38bb844e8ull;
+#else
+    constexpr std::uint64_t kSlip1 = 0x8ab2f9687cc807d5ull;
+#endif
+    for (const Slip& g : {Slip{1, kSlip1, 1671.7, 1}, Slip{2, 0xfbd8157f10e651bdull, 1607.0, 1}}) {
         Battle b(g.seed, 0);
         b.set_burn(0, Burn::Left, 1);
         while (b.time() < 150) b.step();
