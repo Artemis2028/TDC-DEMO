@@ -506,6 +506,9 @@ TEST(headon_brawler_matches_the_pre_scenario_build) {
             Battle b = explicit_args ? Battle(g.seed, g.cls, 120e3, Scenario::HeadOn, Personality::Brawler) : Battle(g.seed, g.cls);
             b.set_ai(0, true);
             while (b.time() < 3600 && b.winner() < 0) b.step();
+            if (b.core_hash() != g.hash)
+                std::printf("  golden seed %llu class %d: hash 0x%016llx, time %.1f, winner %d\n", static_cast<unsigned long long>(g.seed),
+                            g.cls, static_cast<unsigned long long>(b.core_hash()), b.time(), b.winner());
             CHECK(b.core_hash() == g.hash);
             CHECK(std::fabs(b.time() - g.t) < 0.05 && b.winner() == g.winner);
         }
@@ -522,6 +525,9 @@ TEST(headon_brawler_matches_the_old_build_when_the_player_sideslips) {
         b.set_burn(0, Burn::Off, 1);
         b.set_ai(0, true);
         while (b.time() < 3600 && b.winner() < 0) b.step();
+        if (b.core_hash() != g.hash)
+            std::printf("  slip seed %llu: hash 0x%016llx, time %.1f, winner %d\n", static_cast<unsigned long long>(g.seed),
+                        static_cast<unsigned long long>(b.core_hash()), b.time(), b.winner());
         CHECK(b.core_hash() == g.hash);
         CHECK(std::fabs(b.time() - g.t) < 0.05 && b.winner() == g.winner);
     }
