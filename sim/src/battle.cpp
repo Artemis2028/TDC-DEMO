@@ -74,10 +74,12 @@ static ShipClass base_earth(const char* name) {
     c.accel = 0.42; c.turn_rate = 0.12;
     c.armor = {120, 40, 30}; c.structure = {160, 220, 160};
     c.placed = {Section::Aft, Section::Body, Section::Body, Section::Nose, Section::Body, Section::Body};
-    // laser_dps: demo balance, set so each Earth ship wins about 65 % of AI-vs-AI battles (100-seed sweeps with the AI
-    // closing to 20 km, armour panels and fire control that believes the crew's kill marks: Dagger 2.15 -> 68 %,
-    // Lance 1.22 -> 67 %). Balance tips sharply around these values. Not physical.
-    c.laser_dps = 2.15; c.laser_range = 150e3; c.laser_heat = 2.2;
+    // laser_dps: demo balance, not physical. Tuned (v0.12.0) so a player who gives no orders at all loses more often
+    // than not, while flying the ship well (holding the range out past the frigate's weapons, picking targets) wins
+    // clearly: 720-battle sweeps over every ship, start and enemy captain, idle player 35-45 %. The earlier values
+    // (Dagger 2.15, Lance 1.22) were tuned for AI-vs-AI and let an idle player win 83 %. Balance tips sharply around
+    // these values; the idle_player_loses_more_than_it_wins test holds them.
+    c.laser_dps = 1.94; c.laser_range = 150e3; c.laser_heat = 2.2;
     c.drive_heat = 0.6; c.cool_extended = 2.7; c.cool_retracted = 0.6;
     c.crew = 40;
     c.repair_base = {60, 45, 50, 40, 35, 70};
@@ -92,7 +94,7 @@ ShipClass lance_class() {
     c.gun = GunKind::Coilgun;
     c.gun_damage = 46; c.gun_reload = 18; c.gun_speed = 12e3; c.gun_range = 100e3; c.gun_heat = 9;
     c.ammo = 60;
-    c.laser_dps = 1.22;
+    c.laser_dps = 0.98;   // see base_earth
     return c;
 }
 

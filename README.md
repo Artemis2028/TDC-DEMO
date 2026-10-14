@@ -1,6 +1,6 @@
 # TDC Demo
 
-The public playable demo of TDC: one battle at the Moon, Earth against Mars, 2300.
+The public playable demo of TDC: one battle above Mars, Earth against Mars, 2300.
 
 The demo runs on its own simplified rules ("gamified" values: armour points, damage per shot, a 0-100 heat bar),
 written in C++ and compiled into a Godot extension. It does not contain the TDC physics engine or its data.
@@ -33,11 +33,20 @@ cmake --build build -j
 ctest --test-dir build
 ```
 
-The extension lands in `game/bin/`; open `game/` in Godot 4.5 or later.
+The extension lands in `game/bin/`; open `game/` in Godot 4.5 or later (CI exports with 4.7).
 
 ## Balance
 
-AI against AI over 40 seeds: Dagger wins about 65 %, Lance about 65 %. `sim/tests/tests.cpp` keeps both above the frigate.
+Balanced so the player's decisions decide the fight. Over 720 battles (both ships, every start, every enemy captain):
+
+| Player | Earth wins |
+| --- | --- |
+| Gives no orders at all | about 42 % |
+| Holds the range at 125-145 km (outside the frigate's weapons) | about 72 % |
+| AI flying the Earth ship (watch mode: closes to 20 km on auto fire) | about 21 % |
+
+`idle_player_loses_more_than_it_wins` in `sim/tests/tests.cpp` keeps an idle player under 50 % and holding the range
+at least 20 points ahead of it. Up to v0.11.1 the balance was tuned AI against AI, which let an idle player win 83 %.
 
 ## Ship models
 

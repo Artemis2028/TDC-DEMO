@@ -3,6 +3,20 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.12.0
+- **Balance: your decisions now decide the battle.** In v0.11.1 a player who gave no orders won 83 % of battles,
+  more than the AI flying the same ship. Earth's lasers are weaker (Dagger 2.15 to 1.94, Lance 1.22 to 0.98), so over
+  720 battles:
+  - giving no orders wins about 42 %;
+  - holding the range outside the frigate's weapons wins about 72 %;
+  - watch mode's AI-flown Earth ship wins about 21 % (it closes to 20 km on auto fire).
+
+  A new rules test keeps an idle player under 50 %.
+- The Patreon button opens the Patreon page.
+- How to play: the 3D-view tip now points at the tactical plot and its weapon ranges.
+- The laser warning no longer covers the 3D view's hint line.
+- The game's description says "above Mars", as the menu does.
+
 ## v0.11.1
 - Cruise (CRZ) is crossed out as not in the demo. Battles start inside weapon range on a flat, gravity-free plane, so
   it could never engage. Its tooltip explains that cruise and orbital transfers come with the full game.
