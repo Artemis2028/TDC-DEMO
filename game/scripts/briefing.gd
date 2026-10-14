@@ -27,7 +27,7 @@ const PAGES := [
 		 "text": "Click an enemy part in the view, or a button here. Right-click a button to mark that system degraded or killed."},
 		{"rect": Rect2(320, 80, 788, 668), "box": Rect2(480, 640, BOX_W, 100), "num": 0, "accent": "sec", "outline": true,
 		 "title": "The 3D view",
-		 "text": "Tab swaps to the enemy's view. Right-drag to orbit, wheel to zoom."},
+		 "text": "Tab: enemy view. V: tactical plot, which shows each side's weapon range. Range is a weapon too."},
 	]},
 	{"title": "2 of 2 · Read the enemy", "callouts": [
 		{"rect": Rect2(1136, 440, 280, 114), "box": Rect2(784, 420, BOX_W, 156), "num": 3, "accent": "sec",

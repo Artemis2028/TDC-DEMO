@@ -2,7 +2,7 @@ extends Node3D
 ## TDC demo: one battle above Mars. All rules run in the compiled DemoBattle; this script only draws and sends orders.
 ## The HUD follows the CIC flight-deck layout. Features that are not in the demo are drawn with a red X and do nothing.
 
-const PATREON_URL := ""   # set before release
+const PATREON_URL := "https://www.patreon.com/c/BlackBody1"
 const SPEED_NAMES := ["II", "½×", "1×", "2×", "5×", "10×", "CRZ"]
 const SYS_NAMES := ["Drive", "Laser", "Gun", "Sensors", "Radiators", "Crew"]
 const SYS_ABBR := ["DRV", "LSR", "GUN", "SNS", "RAD", "CRW"]
@@ -1875,8 +1875,9 @@ func _draw_alerts(c: Control) -> void:
 	var y := own_anchor.y
 	var ship_y := own_anchor.y
 	if lasing:
-		# vertically halfway between the time controls (bottom at y 42 in the view) and the top of our ship
-		y = maxf(90.0, (42.0 + ship_y) / 2.0 + 11.0)       # the box is centred 11 px above y
+		# vertically halfway between the time controls (bottom at y 42 in the view) and the top of our ship, but never
+		# over the view's title and its hint line (which ends near y 56)
+		y = maxf(108.0, (42.0 + ship_y) / 2.0 + 11.0)      # the box is centred 11 px above y; its top is y - 44
 		var pulse := 0.65 + 0.35 * sin(now * TAU * 2.5)
 		var txt := "LASER WARNING"
 		var w := W.FH.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 30).x

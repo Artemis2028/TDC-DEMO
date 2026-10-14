@@ -121,8 +121,9 @@ TEST(cruise_only_out_of_weapon_range) {
 }
 
 TEST(battles_end) {
-    // AI against AI: every seed reaches a result within an hour of battle time, and neither ship wins them all
-    // (demo balance target: each player ship wins roughly 55-75 % of AI-flown battles).
+    // AI against AI: every seed reaches a result within an hour of battle time, and neither side wins them all. The
+    // balance target is no longer AI-vs-AI (see idle_player_loses_more_than_it_wins): the player's AI closes to 20 km
+    // with auto fire control, which plays the Earth ships below their strength, so Earth wins only about a fifth.
     int earth = 0, mars = 0;
     for (std::uint64_t seed = 1; seed <= 10; ++seed)
         for (int cls : {0, 1}) {
@@ -131,7 +132,7 @@ TEST(battles_end) {
             (b.winner() == 0 ? earth : mars)++;
         }
     std::printf("  wins over 20 battles: player %d, frigate %d\n", earth, mars);
-    CHECK(earth > mars);
+    CHECK(earth >= 2);
     CHECK(mars >= 2);
 }
 
@@ -487,14 +488,15 @@ static Battle& quiet(Battle& b) {
 }
 static std::string all_events(const Battle& b) { std::string t; for (const auto& e : b.events()) t += e.text + "\n"; return t; }
 
-// Golden values taken from the build before scenarios and personalities existed (git HEAD~: state_hash then hashed only
-// the physical state). core_hash() is that same formula, so these compare directly; state_hash() now also mixes AI
+// Golden values first taken from the build before scenarios and personalities existed (state_hash then hashed only
+// the physical state), and held through v0.11.1. Re-taken at v0.12.0, whose deliberate Earth laser retune changes
+// every battle; the scenario code is unchanged, so they still pin HeadOn/Brawler against any accidental change. core_hash() is that same formula, so these compare directly; state_hash() now also mixes AI
 // state (style, retreat/lateral flags, phase clock, broadside side) and is not comparable with them.
 struct Golden { std::uint64_t seed; int cls; std::uint64_t hash; double t; int winner; };
 static const Golden kGoldenRuns[] = {
-    {1, 0, 0x029b42ee28c89655ull, 1980.2, 1}, {1, 1, 0x90535e28deaaca86ull, 1615.4, 1},
-    {2, 0, 0x99d4dc699ab4a939ull, 1273.7, 0}, {2, 1, 0x2f4b34371d68b0daull, 1217.5, 0},
-    {3, 0, 0x9f89f140d44dc8f4ull, 1177.2, 0}, {3, 1, 0x421aa144f4396700ull, 958.9, 0},
+    {1, 0, 0x8424a2da8ea2ce84ull, 1486.1, 0}, {1, 1, 0x86e1dbb7287299b8ull, 1597.6, 1},
+    {2, 0, 0xda2658acd90af907ull, 1695.3, 1}, {2, 1, 0xcff6e44945d2a37aull, 994.8, 0},
+    {3, 0, 0xf62a853abeb66721ull, 1933.9, 1}, {3, 1, 0x36db09bbb809a70eull, 982.9, 0},
 };
 
 TEST(headon_brawler_matches_the_pre_scenario_build) {
@@ -504,6 +506,9 @@ TEST(headon_brawler_matches_the_pre_scenario_build) {
             Battle b = explicit_args ? Battle(g.seed, g.cls, 120e3, Scenario::HeadOn, Personality::Brawler) : Battle(g.seed, g.cls);
             b.set_ai(0, true);
             while (b.time() < 3600 && b.winner() < 0) b.step();
+            if (b.core_hash() != g.hash)
+                std::printf("  golden seed %llu class %d: hash 0x%016llx, time %.1f, winner %d\n", static_cast<unsigned long long>(g.seed),
+                            g.cls, static_cast<unsigned long long>(b.core_hash()), b.time(), b.winner());
             CHECK(b.core_hash() == g.hash);
             CHECK(std::fabs(b.time() - g.t) < 0.05 && b.winner() == g.winner);
         }
@@ -511,15 +516,25 @@ TEST(headon_brawler_matches_the_pre_scenario_build) {
 
 TEST(headon_brawler_matches_the_old_build_when_the_player_sideslips) {
     // The player burns left for 150 s (a sideways drift), then lets the AI fly. HeadOn and SternChase must not run the
-    // Crossing scenario's drift-cancel logic, so this is the old behaviour exactly. Golden values from the old build.
+    // Crossing scenario's drift-cancel logic, so this is the old behaviour exactly. Golden values as above (re-taken at v0.12.0).
     struct Slip { std::uint64_t seed; std::uint64_t hash; double t; int winner; };
-    for (const Slip& g : {Slip{1, 0x57fb61e455b7943cull, 1674.3, 1}, Slip{2, 0x24f19cdd54fac27cull, 1815.3, 1}}) {
+    // Seed 1's 1670 s battle ends the same on every compiler but its last bits differ under MSVC (its maths library
+    // rounds a few results differently from glibc's), so it carries one golden hash per toolchain.
+#ifdef _MSC_VER
+    constexpr std::uint64_t kSlip1 = 0x02aa14e38bb844e8ull;
+#else
+    constexpr std::uint64_t kSlip1 = 0x8ab2f9687cc807d5ull;
+#endif
+    for (const Slip& g : {Slip{1, kSlip1, 1671.7, 1}, Slip{2, 0xfbd8157f10e651bdull, 1607.0, 1}}) {
         Battle b(g.seed, 0);
         b.set_burn(0, Burn::Left, 1);
         while (b.time() < 150) b.step();
         b.set_burn(0, Burn::Off, 1);
         b.set_ai(0, true);
         while (b.time() < 3600 && b.winner() < 0) b.step();
+        if (b.core_hash() != g.hash)
+            std::printf("  slip seed %llu: hash 0x%016llx, time %.1f, winner %d\n", static_cast<unsigned long long>(g.seed),
+                        static_cast<unsigned long long>(b.core_hash()), b.time(), b.winner());
         CHECK(b.core_hash() == g.hash);
         CHECK(std::fabs(b.time() - g.t) < 0.05 && b.winner() == g.winner);
     }
@@ -657,7 +672,7 @@ TEST(brawler_behaviour_is_unchanged_in_the_default_setup) {
     Battle g(1, 0);
     g.set_ai(0, true);
     while (g.time() < 3600 && g.winner() < 0) g.step();
-    CHECK(g.core_hash() == 0x029b42ee28c89655ull && std::fabs(g.time() - 1980.2) < 0.05);
+    CHECK(g.core_hash() == 0x8424a2da8ea2ce84ull && std::fabs(g.time() - 1486.1) < 0.05);
 }
 
 TEST(crossing_drift_is_cancelled_then_the_range_closes) {
@@ -743,6 +758,45 @@ TEST(every_scenario_and_personality_ends) {
                 while (b.time() < 3600 && b.winner() < 0) b.step();
                 CHECK(b.winner() >= 0);
             }
+}
+
+// ---------------------------------------------------------------- balance: the player's choices matter
+
+// Every ship, start and enemy captain, `n` seeds each (720 battles at n = 40). `orders` runs every tick before the step.
+// A battle still going after an hour counts as not won. A few wrecks slug it out past that (repairs keep bringing a
+// shattered laser back), so up to 1 % may run long; the rest must end.
+static double player_win_rate(int n, std::function<void(Battle&)> orders) {
+    int won = 0, all = 0, long_runs = 0;
+    for (int cls : {0, 1})
+        for (int sc = 0; sc < static_cast<int>(Scenario::Count); ++sc)
+            for (int pe = 0; pe < static_cast<int>(Personality::Count); ++pe)
+                for (int s = 1; s <= n; ++s) {
+                    Battle b(static_cast<std::uint64_t>(s) * 7919u + static_cast<std::uint64_t>(pe * 13 + sc * 101), cls, 120e3,
+                             static_cast<Scenario>(sc), static_cast<Personality>(pe));
+                    while (b.winner() < 0 && b.time() < 3600) { if (orders) orders(b); b.step(); }
+                    long_runs += b.winner() < 0;
+                    won += b.winner() == 0; ++all;
+                }
+    CHECK(long_runs <= all / 100);
+    return static_cast<double>(won) / all;
+}
+
+TEST(idle_player_loses_more_than_it_wins) {
+    // A player who gives no orders (weapons free, auto fire control and auto repair, as the battle starts) must lose
+    // more often than not: the demo is about the player's decisions. v0.11.1 let an idle player win 83 %. Flying the
+    // ship with one plain idea, holding the range at 125-145 km where the frigate's railgun (70 km) and laser (110 km)
+    // can't answer the Earth laser (150 km), must beat sitting still clearly.
+    double idle = player_win_rate(40, nullptr);
+    double standoff = player_win_rate(40, [](Battle& b) {
+        double r = b.range(0, 1), c = b.closing(0, 1);
+        if (r < 125e3 && c > -5) b.set_burn(0, Burn::Away, 1);
+        else if (r > 145e3 && c < 5) b.set_burn(0, Burn::Toward, 1);
+        else if (b.ships()[0].burn != Burn::Off) b.set_burn(0, Burn::Off, 1);
+    });
+    std::printf("  player win rate over 720 battles each: idle %.0f %%, holding the range %.0f %%\n", idle * 100, standoff * 100);
+    CHECK(idle < 0.5);
+    CHECK(idle > 0.25);              // still winnable for a new player who fumbles
+    CHECK(standoff > idle + 0.2);
 }
 
 int main() {

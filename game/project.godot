@@ -3,7 +3,7 @@ config_version=5
 
 [application]
 config/name="TDC Demo"
-config/description="TDC playable demo: one battle at the Moon."
+config/description="TDC playable demo: one battle above Mars."
 run/main_scene="res://scenes/main.tscn"
 run/flush_stdout_on_print=true
 config/features=PackedStringArray("4.5", "Forward Plus")
