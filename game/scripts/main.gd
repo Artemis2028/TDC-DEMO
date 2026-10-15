@@ -1583,7 +1583,11 @@ func _build_menu() -> void:
 	v.add_child(UI.header("Choose your ship"))
 	v.add_child(UI.button("Dagger · laser cruiser", func(): _start(0), UI.PRI, 400))
 	v.add_child(UI.button("Lance · laser + spinal coilgun", func(): _start(1), UI.PRI, 400))
-	v.add_child(UI.button("Watch an AI battle", _watch_ai, UI.SEC, 400))
+	# The AI flying Earth here charges in (closes to 20 km on auto fire) and wins only ~21 %, so say so: a player
+	# who watches first should not conclude Earth is hopeless.
+	var wb := UI.button("Watch an AI battle · aggressive Earth captain", _watch_ai, UI.SEC, 400)
+	wb.tooltip_text = "The AI flies your Lance aggressively: it charges to 20 km on auto fire and loses more often than not.\nA careful captain who holds the range does much better."
+	v.add_child(wb)
 	v.add_child(UI.header("Coming soon", UI.FAINT))
 	v.add_child(UI.locked("Ship designer", 400))
 	v.add_child(UI.locked("Orbital transfers · fleets · missiles · EW", 400))

@@ -43,7 +43,7 @@ Balanced so the player's decisions decide the fight. Over 720 battles (both ship
 | --- | --- |
 | Gives no orders at all | about 42 % |
 | Holds the range at 125-145 km (outside the frigate's weapons) | about 72 % |
-| AI flying the Earth ship (watch mode: closes to 20 km on auto fire) | about 21 % |
+| AI flying the Earth ship (watch mode, labelled "aggressive Earth captain": closes to 20 km on auto fire) | about 21 % |
 
 `idle_player_loses_more_than_it_wins` in `sim/tests/tests.cpp` keeps an idle player under 50 % and holding the range
 at least 20 points ahead of it. Up to v0.11.1 the balance was tuned AI against AI, which let an idle player win 83 %.
