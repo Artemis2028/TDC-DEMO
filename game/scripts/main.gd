@@ -126,6 +126,8 @@ const STYLE_NAMES := ["a brawler: closed to knife range and slugged it out",
 	"a broadsider: turned side-on to bring every turret to bear, rolling to spread the damage"]
 var scenario_pick := -1          # menu choice for the next battle; -1 random
 var scen_btns: Array = []
+var resume_btn: Button          # menu: back to the battle Esc left (hidden when there is none)
+var resumable := false          # a battle the player left with Esc, unfinished and waiting
 var read_calls := {}             # crew observations of the enemy's manoeuvres already made this battle (see _read_enemy)
 var tplot: TacticalPlot          # V / PLOT: top-down engagement plot over the 3D view
 var aar: AAR                     # after-action recorder for the battle in progress
@@ -357,6 +359,8 @@ static func _arg_int(args: PackedStringArray, flag: String, fallback: int) -> in
 
 func _start(cls: int, brief := true) -> void:
 	ship_class = cls
+	resumable = false                # a new battle replaces any one left waiting
+	if resume_btn: resume_btn.visible = false
 	battle = DemoBattle.new()
 	# Screenshots use a fixed seed and today's head-on brawler unless --scenario / --personality say otherwise.
 	var sargs := OS.get_cmdline_user_args()
@@ -537,6 +541,13 @@ func _process(delta: float) -> void:
 		if shot_frames == 20 and OS.get_cmdline_user_args().has("--aar") and end_screen.visible: _open_aar()
 		if shot_frames == 20 and OS.get_cmdline_user_args().has("--settings"): settings_panel.open()
 		if shot_frames == 20 and OS.get_cmdline_user_args().has("--brief"): briefing.open()
+		if OS.get_cmdline_user_args().has("--esc"):   # screenshots: press Esc n times (20, 26, ...) through the real input path
+			var n := _arg_int(OS.get_cmdline_user_args(), "--esc", 1)
+			if shot_frames >= 20 and shot_frames < 20 + 6 * n and (shot_frames - 20) % 6 == 0:
+				var k := InputEventKey.new()
+				k.keycode = KEY_ESCAPE
+				k.pressed = true
+				Input.parse_input_event(k)
 		if shot_frames == 40:
 			var img := get_viewport().get_texture().get_image()
 			img.save_png(shot_path)
@@ -1535,9 +1546,9 @@ func _overlay() -> Control:
 func _build_menu() -> void:
 	menu = _overlay()
 	var v := VBoxContainer.new()
-	v.position = Vector2(520, 64)
+	v.position = Vector2(520, 36)
 	v.size = Vector2(400, 580)
-	v.add_theme_constant_override("separation", 11)
+	v.add_theme_constant_override("separation", 10)
 	menu.add_child(v)
 	var t := UI.label("TDC", 64, UI.PRI)
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1551,6 +1562,11 @@ func _build_menu() -> void:
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.custom_minimum_size.x = 400
 	v.add_child(note)
+	# Esc in battle pauses it under the menu; this takes the player back. Esc on the menu does the same.
+	resume_btn = UI.button("Resume battle  (Esc)", _resume, UI.PRI, 400)
+	UI.set_active(resume_btn, true)
+	resume_btn.visible = false
+	v.add_child(resume_btn)
 	# Starting situation: random by default, so each battle can open differently. The enemy captain's style is never
 	# chosen or shown here; the player reads it from how the frigate moves (and the end screen tells).
 	v.add_child(UI.header("Starting situation"))
@@ -1583,7 +1599,7 @@ func _build_menu() -> void:
 	row2.add_child(UI.button("Settings", func(): settings_panel.open(), UI.SEC, 132))
 	row2.add_child(UI.button("Quit", func(): get_tree().quit(), UI.MUTED, 128))
 	v.add_child(row2)
-	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll left/right (again to stop) · T side-on / nose-on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · V tactical plot · B fire-control lines · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Right-click a target button to mark it degraded / killed · Esc menu", 12, UI.FAINT)
+	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll left/right (again to stop) · T side-on / nose-on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · V tactical plot · B hide/show laser lines · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Right-click a target button to mark it degraded / killed · Esc pause / resume", 12, UI.FAINT)
 	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	keys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	keys.custom_minimum_size.x = 400
@@ -1596,6 +1612,11 @@ func _pick_scenario(si: int) -> void:
 		UI.set_active(scen_btns[i], i - 1 == si)
 
 func _show_menu() -> void:
+	# Leaving a live battle: it waits frozen under the menu (only state "battle" advances it) and can be resumed.
+	resumable = state == "battle" and battle != null and battle.get_winner() < 0
+	resume_btn.visible = resumable
+	if sfx: sfx.stop_loops()        # the loops are only driven in battle; left alone they would hum on
+	was_lasing = false
 	state = "menu"
 	menu.visible = true
 	end_screen.visible = false
@@ -1606,6 +1627,17 @@ func _show_menu() -> void:
 		battle.set_player_ai(true)
 		battle.set_speed(3)
 		_spawn_models()
+
+## Back to the battle Esc left, exactly as it was (its clock did not run while the menu was up).
+func _resume() -> void:
+	if not resumable or battle == null or battle.get_winner() >= 0: return
+	resumable = false
+	resume_btn.visible = false
+	state = "battle"
+	menu.visible = false
+	hud.visible = true
+	hud_dirty = true
+	snap_dirty = true
 
 func _build_end() -> void:
 	end_screen = _overlay()
@@ -1777,6 +1809,8 @@ func _unhandled_input(e: InputEvent) -> void:
 				if aar_view != null and aar_view.visible: aar_view.visible = false   # close the report first
 				else: _show_menu()
 			KEY_M: sfx.muted = not sfx.muted
+	elif e is InputEventKey and e.pressed and not e.echo and state == "menu" and e.keycode == KEY_ESCAPE and resumable:
+		_resume()
 
 
 ## Gun rounds as a glowing head with a short tail that travels with the round and fades behind it (a comet, not a
