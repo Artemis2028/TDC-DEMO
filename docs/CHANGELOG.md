@@ -11,6 +11,8 @@ CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so
   whether they start on. The menu's key list and the briefing footer say Esc pauses and resumes.
 - The menu's watch-mode button says the AI flying Earth is an aggressive captain (it charges in and wins only about
   21 %), with a tooltip, so watching first doesn't suggest Earth is hopeless.
+- Each CI build's download now includes `SHA256.txt` with the exe's hash (also shown on the run's summary page),
+  so a VirusTotal scan can be matched to the exact file.
 
 ## v0.12.0
 - **Balance: your decisions now decide the battle.** In v0.11.1 a player who gave no orders won 83 % of battles,

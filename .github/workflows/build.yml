@@ -50,6 +50,16 @@ jobs:
           Copy-Item LICENSE.txt export/
           Get-ChildItem export
 
+      - name: Write the SHA-256 hash of the exe (to match against VirusTotal scans)
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash export/TDC-Demo.exe -Algorithm SHA256).Hash.ToLower()
+          $v = (Select-String -Path game/scripts/version.gd -Pattern 'const NUMBER := "(.*)"').Matches[0].Groups[1].Value
+          $b = "${{ github.run_number }} (" + "${{ github.sha }}".Substring(0, 7) + ")"
+          "TDC Demo v$v · build $b`n`nSHA-256  $h  TDC-Demo.exe`n" | Set-Content export/SHA256.txt -NoNewline
+          Get-Content export/SHA256.txt
+          "### TDC-Demo.exe SHA-256`n``$h``" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+
       - uses: actions/upload-artifact@v4
         with:
           name: TDC-Demo-windows
