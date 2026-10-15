@@ -3,6 +3,13 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.12.1
+- **Esc pauses the battle.** Esc in battle opens the menu with the fight frozen underneath, and a **Resume battle**
+  button (or Esc again) takes you back exactly where you left off. Before, the menu offered no way back and the
+  laser and drive sounds kept playing, so it sounded as if the battle was still going.
+- How to play: the 3D-view tip now says B hides the dashed laser lines (fire-control lines) and that Settings sets
+  whether they start on. The menu's key list and the briefing footer say Esc pauses and resumes.
+
 ## v0.12.0
 - **Balance: your decisions now decide the battle.** In v0.11.1 a player who gave no orders won 83 % of battles,
   more than the AI flying the same ship. Earth's lasers are weaker (Dagger 2.15 to 1.94, Lance 1.22 to 0.98), so over

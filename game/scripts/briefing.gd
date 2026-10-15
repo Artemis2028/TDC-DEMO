@@ -25,9 +25,9 @@ const PAGES := [
 		{"rect": Rect2(24, 490, 272, 154), "box": Rect2(336, 470, BOX_W, 112), "num": 0, "accent": "pri",
 		 "title": "Aim at a part",
 		 "text": "Click an enemy part in the view, or a button here. Right-click a button to mark that system degraded or killed."},
-		{"rect": Rect2(320, 80, 788, 668), "box": Rect2(480, 640, BOX_W, 100), "num": 0, "accent": "sec", "outline": true,
+		{"rect": Rect2(320, 80, 788, 668), "box": Rect2(480, 600, BOX_W, 140), "num": 0, "accent": "sec", "outline": true,
 		 "title": "The 3D view",
-		 "text": "Tab: enemy view. V: tactical plot, which shows each side's weapon range. Range is a weapon too."},
+		 "text": "Tab: enemy view. V: tactical plot, which shows each side's weapon range. Range is a weapon too. B hides the dashed laser lines (real beams are invisible); Settings sets the default."},
 	]},
 	{"title": "2 of 2 · Read the enemy", "callouts": [
 		{"rect": Rect2(1136, 440, 280, 114), "box": Rect2(784, 420, BOX_W, 156), "num": 3, "accent": "sec",
@@ -126,7 +126,7 @@ func _build() -> void:
 	_check.size = Vector2(200, 28)
 	_check.toggled.connect(func(on: bool): Settings.set_show_briefing(not on))
 	add_child(_check)
-	var foot := UI.label("Esc closes this · in battle, Esc opens the menu", 13, UI.MUTED)
+	var foot := UI.label("Esc closes this · in battle, Esc pauses to the menu (Esc again resumes)", 13, UI.MUTED)
 	foot.position = Vector2(440, 866)
 	foot.size = Vector2(560, 20)
 	foot.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
