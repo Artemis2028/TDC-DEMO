@@ -16,6 +16,7 @@ var _vol_txt: Label
 var _win_btns: Array = []
 var _fps_btns: Array = []
 var _fc_btns: Array = []
+var _beam_btns: Array = []
 var _status: Label
 
 ## Put a new panel on its own canvas layer above the menu (menu is layer 5) and return it. Hidden until open().
@@ -106,6 +107,13 @@ func _build() -> void:
 		row.add_child(b)
 		_fc_btns.append(b)
 	v.add_child(_note("The B key switches them during a battle."))
+	row = _row(v, "Visible laser beams")
+	for on in [true, false]:
+		var shown: bool = on
+		var b := UI.button("On" if shown else "Off", func(): _set_beams(shown), UI.PRI, 80)
+		row.add_child(b)
+		_beam_btns.append(b)
+	v.add_child(_note("Off is the physical default: nothing in vacuum scatters a beam, so you see the spot and the emitter. The L key switches the beams on during a battle. On shows the Lance's own beam meshes, and a simple beam on the Dagger and the Mars frigate."))
 	var chk := Check.new("Show the how-to-play briefing when the game starts", Settings.show_briefing)
 	chk.name = "BriefingCheck"
 	chk.toggled.connect(func(on: bool): Settings.set_show_briefing(on))
@@ -192,6 +200,8 @@ func _refresh() -> void:
 	for i in _fps_btns.size(): UI.set_active(_fps_btns[i], Settings.FPS_CAPS[i] == Settings.fps_cap)
 	UI.set_active(_fc_btns[0], Settings.fc_lines)
 	UI.set_active(_fc_btns[1], not Settings.fc_lines)
+	UI.set_active(_beam_btns[0], Settings.laser_beams)
+	UI.set_active(_beam_btns[1], not Settings.laser_beams)
 
 func _on_volume(v: float) -> void:
 	Settings.set_volume(int(v), false)      # live; saved when the drag ends
@@ -211,6 +221,10 @@ func _set_fps(c: int) -> void:
 
 func _set_fc(on: bool) -> void:
 	Settings.set_fc_lines(on)
+	_refresh()
+
+func _set_beams(on: bool) -> void:
+	Settings.set_laser_beams(on)
 	_refresh()
 
 func _on_how_to_play() -> void:

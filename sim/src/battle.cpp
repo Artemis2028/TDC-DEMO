@@ -162,6 +162,10 @@ static Ship make_ship(int id, const ShipClass& c, int side, bool player, Vec2 po
     for (int k = 0; k < kSec; ++k) s.panels[static_cast<std::size_t>(k)].fill(c.armor[static_cast<std::size_t>(k)]);
     s.crew = c.crew; s.ammo = c.ammo; s.dv_left = c.delta_v;
     if (c.gun == GunKind::None) s.health[static_cast<int>(Sys::Gun)] = 0;
+    // The coilgun's reload (gun_reload, 18 s) is the wait between rounds, and it starts at zero, so the first
+    // round used to leave with no charge. Hold the opening shot for the authored charge, 3 s. Later rounds still
+    // wait the full reload. The view plays CoilgunCharge across whichever wait is running. The railgun is unchanged.
+    if (c.gun == GunKind::Coilgun) s.gun_cooldown = 3.0;
     for (int k = 0; k < kTurrets; ++k) s.turret_aim[static_cast<std::size_t>(k)] = mount(k);
     return s;
 }

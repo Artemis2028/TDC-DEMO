@@ -1,10 +1,11 @@
 """Turn the authored Arbiter TDC v8 glTF into the Lance's runtime model.
 
 The file is already in game axes (nose -Z, +Y up, +X starboard) and carries the
-13 animations. This only splits the static root meshes into nose / body / aft
-pieces so the armour view can tint them the same way it tints the Dagger
-(mesh names starting N_ / B_ / A_). Animated nodes are not renamed and their
-meshes are not rewritten, so every clip still finds its targets.
+13 animations. Static root meshes are split into nose / body / aft so the armour
+view can tint them (mesh names starting N_ / B_ / A_). Surfaces that share a
+mesh and a visual material are then joined, and the non-hull static root parts
+are joined per section. Animated nodes are not renamed, so every clip still
+finds its targets.
 
 Cuts match the Dagger's section fractions on this hull: the armoured nose
 (forward of z = -42) and the engineering aft (aft of z = 52).
@@ -246,6 +247,285 @@ def split_node(gltf, blob, node_index):
     return made
 
 
+def material_fp(gltf, mi):
+    """What Godot actually draws. Names differ; identical factors batch as one material.
+    Anisotropy is ignored because the importer drops that extension."""
+    if mi is None:
+        return None
+    m = gltf["materials"][mi]
+    p = m.get("pbrMetallicRoughness", {})
+    tex = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if isinstance(v, dict) and "index" in v and "texture" in k.lower():
+                    tex.append((k, v["index"]))
+                else:
+                    walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+
+    walk(m)
+    bc = tuple(round(float(x), 5) for x in p.get("baseColorFactor", [1, 1, 1, 1]))
+    em = tuple(round(float(x), 5) for x in m.get("emissiveFactor", [0, 0, 0]))
+    return (
+        bc,
+        round(float(p.get("metallicFactor", 1.0)), 5),
+        round(float(p.get("roughnessFactor", 1.0)), 5),
+        em,
+        m.get("alphaMode", "OPAQUE"),
+        tuple(sorted(tex)),
+    )
+
+
+def canonical_materials(gltf):
+    """First material index for each visual fingerprint."""
+    first = {}
+    out = {}
+    for i in range(len(gltf["materials"])):
+        f = material_fp(gltf, i)
+        if f not in first:
+            first[f] = i
+        out[i] = first[f]
+    return out
+
+
+def _tri_count(gltf, prim):
+    if "indices" in prim:
+        return gltf["accessors"][prim["indices"]]["count"] // 3
+    return gltf["accessors"][prim["attributes"]["POSITION"]]["count"] // 3
+
+
+def concat_prims(gltf, blob, prims, mat, textured):
+    positions = []
+    normals = []
+    uvs = []
+    indices = []
+    for prim in prims:
+        attrs = {k: read_acc(gltf, blob, ai) for k, ai in prim["attributes"].items()}
+        pos = attrs["POSITION"]
+        nrm = attrs.get("NORMAL")
+        uv = attrs.get("TEXCOORD_0")
+        if "indices" in prim:
+            idx = read_acc(gltf, blob, prim["indices"])
+        else:
+            idx = list(range(len(pos)))
+        base = len(positions)
+        positions.extend(pos)
+        normals.extend(nrm if nrm else [(0.0, 1.0, 0.0)] * len(pos))
+        if textured:
+            uvs.extend(uv if uv else [(0.0, 0.0)] * len(pos))
+        indices.extend(base + i for i in idx)
+    out = {"attributes": {}, "mode": 4}
+    if mat is not None:
+        out["material"] = mat
+    out["attributes"]["POSITION"] = write_vec(gltf, blob, positions, 3, 34962)
+    out["attributes"]["NORMAL"] = write_vec(gltf, blob, normals, 3, 34962)
+    if textured:
+        out["attributes"]["TEXCOORD_0"] = write_vec(gltf, blob, uvs, 2, 34962)
+    out["indices"] = write_indices(gltf, blob, indices)
+    return out
+
+
+def merge_mesh_prims(gltf, blob, node_ids, canon):
+    """One primitive per visual material on each mesh. Animated nodes are untouched as nodes;
+    only surfaces that already share a mesh (and therefore move together) are joined."""
+    seen = set()
+    before = 0
+    after = 0
+    for ni in node_ids:
+        n = gltf["nodes"][ni]
+        if "mesh" not in n:
+            continue
+        mi = n["mesh"]
+        if mi in seen:
+            continue
+        seen.add(mi)
+        mesh = gltf["meshes"][mi]
+        groups = {}
+        order = []
+        for prim in mesh["primitives"]:
+            before += 1
+            src = prim.get("material")
+            c = canon.get(src, src)
+            textured = bool(material_fp(gltf, c)[-1]) if c is not None else False
+            key = (c, textured)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(prim)
+        new_prims = []
+        for key in order:
+            c, textured = key
+            prims = groups[key]
+            if len(prims) == 1:
+                prims[0]["material"] = c
+                new_prims.append(prims[0])
+            else:
+                new_prims.append(concat_prims(gltf, blob, prims, c, textured))
+        mesh["primitives"] = new_prims
+        after += len(new_prims)
+    return before, after
+
+
+def merge_fittings(gltf, blob, root):
+    """Join static root meshes that are not the pressure hull and share a section and a material.
+    Root children here are at identity, so vertices already share a space. Hull nodes stay, so the
+    hot-spot box does not grow to include the point-defence lattice."""
+    nodes = gltf["nodes"]
+    canon_groups = {}
+    order = []
+    kept = []
+    dropped = 0
+    for ci in list(nodes[root].get("children", [])):
+        n = nodes[ci]
+        name = n.get("name", "")
+        if "mesh" not in n or name in ("N_hull", "B_hull", "A_hull") or n.get("children"):
+            kept.append(ci)
+            continue
+        sec = name[0] if name[:2] in ("N_", "B_", "A_") else "B"
+        for prim in gltf["meshes"][n["mesh"]]["primitives"]:
+            mat = prim.get("material")
+            key = (sec, mat)
+            if key not in canon_groups:
+                canon_groups[key] = []
+                order.append(key)
+            canon_groups[key].append(prim)
+        dropped += 1
+    by_sec = {s: [] for s in SECS}
+    for key in order:
+        sec, mat = key
+        prims = canon_groups[key]
+        textured = bool(material_fp(gltf, mat)[-1]) if mat is not None else False
+        if len(prims) == 1:
+            by_sec[sec].append(prims[0])
+        else:
+            by_sec[sec].append(concat_prims(gltf, blob, prims, mat, textured))
+    for sec in SECS:
+        prims = by_sec[sec]
+        if not prims:
+            continue
+        gltf["meshes"].append({"name": "%s_fittings" % sec, "primitives": prims})
+        gltf["nodes"].append({"name": "%s_fittings" % sec, "mesh": len(gltf["meshes"]) - 1})
+        kept.append(len(gltf["nodes"]) - 1)
+    nodes[root]["children"] = kept
+    return dropped
+
+
+def reachable(gltf):
+    nodes = gltf["nodes"]
+    root = gltf["scenes"][gltf.get("scene", 0)]["nodes"][0]
+    seen = set()
+
+    def walk(i):
+        if i in seen:
+            return
+        seen.add(i)
+        for c in nodes[i].get("children", []):
+            walk(c)
+
+    walk(root)
+    return seen
+
+
+def prune_unreachable(gltf):
+    """Drop nodes the scene does not draw. Animation targets are all in the scene; indices are remapped."""
+    nodes = gltf["nodes"]
+    reach = reachable(gltf)
+    for a in gltf["animations"]:
+        for ch in a["channels"]:
+            ni = ch["target"]["node"]
+            if ni not in reach:
+                raise SystemExit("animation target left the scene: %s" % nodes[ni].get("name"))
+    keep = [i for i in range(len(nodes)) if i in reach]
+    mp = {old: new for new, old in enumerate(keep)}
+    new_nodes = []
+    for old in keep:
+        n = dict(nodes[old])
+        if "children" in n:
+            n["children"] = [mp[c] for c in n["children"] if c in mp]
+        new_nodes.append(n)
+    gltf["nodes"] = new_nodes
+    scene = gltf["scenes"][gltf.get("scene", 0)]
+    scene["nodes"] = [mp[i] for i in scene["nodes"]]
+    for a in gltf["animations"]:
+        for ch in a["channels"]:
+            ch["target"]["node"] = mp[ch["target"]["node"]]
+    return len(nodes) - len(new_nodes)
+
+
+def compact_buffers(gltf, blob):
+    """Keep buffer bytes that a live mesh, an animation or an image still points at."""
+    used_mesh = set()
+    for n in gltf["nodes"]:
+        if "mesh" in n:
+            used_mesh.add(n["mesh"])
+    keep_m = sorted(used_mesh)
+    mm = {old: new for new, old in enumerate(keep_m)}
+    gltf["meshes"] = [gltf["meshes"][i] for i in keep_m]
+    for n in gltf["nodes"]:
+        if "mesh" in n:
+            n["mesh"] = mm[n["mesh"]]
+    used_a = set()
+    for mesh in gltf["meshes"]:
+        for p in mesh["primitives"]:
+            for ai in p["attributes"].values():
+                used_a.add(ai)
+            if "indices" in p:
+                used_a.add(p["indices"])
+    for a in gltf["animations"]:
+        for s in a["samplers"]:
+            used_a.add(s["input"])
+            used_a.add(s["output"])
+    keep_a = sorted(used_a)
+    am = {old: new for new, old in enumerate(keep_a)}
+    new_accessors = []
+    for old in keep_a:
+        acc = dict(gltf["accessors"][old])
+        new_accessors.append(acc)
+    for mesh in gltf["meshes"]:
+        for p in mesh["primitives"]:
+            p["attributes"] = {k: am[v] for k, v in p["attributes"].items()}
+            if "indices" in p:
+                p["indices"] = am[p["indices"]]
+    for a in gltf["animations"]:
+        for s in a["samplers"]:
+            s["input"] = am[s["input"]]
+            s["output"] = am[s["output"]]
+    used_v = set()
+    for acc in new_accessors:
+        if "bufferView" in acc:
+            used_v.add(acc["bufferView"])
+    for im in gltf.get("images", []):
+        if "bufferView" in im:
+            used_v.add(im["bufferView"])
+    keep_v = sorted(used_v)
+    vm = {old: new for new, old in enumerate(keep_v)}
+    new_blob = bytearray()
+    new_views = []
+    for old in keep_v:
+        bv = dict(gltf["bufferViews"][old])
+        start = bv.get("byteOffset", 0)
+        length = bv["byteLength"]
+        while len(new_blob) % 4:
+            new_blob.append(0)
+        bv["byteOffset"] = len(new_blob)
+        new_blob.extend(blob[start:start + length])
+        new_views.append(bv)
+    for acc in new_accessors:
+        if "bufferView" in acc:
+            acc["bufferView"] = vm[acc["bufferView"]]
+    for im in gltf.get("images", []):
+        if "bufferView" in im:
+            im["bufferView"] = vm[im["bufferView"]]
+    gltf["accessors"] = new_accessors
+    gltf["bufferViews"] = new_views
+    gltf["buffers"][0]["byteLength"] = len(new_blob) + ((4 - len(new_blob) % 4) % 4)
+    return new_blob
+
+
 def main(src, dst):
     gltf, blob = load_glb(src)
     nodes = gltf["nodes"]
@@ -254,9 +534,6 @@ def main(src, dst):
         for ch in a["channels"]:
             anim.add(ch["target"]["node"])
     root = gltf["scenes"][gltf.get("scene", 0)]["nodes"][0]
-    if anim & set(gltf["nodes"][root].get("children", [])):
-        # a direct child being animated is fine; we only rewrite unanimated mesh children
-        pass
     children = list(nodes[root].get("children", []))
     new_children = []
     replaced = 0
@@ -277,19 +554,34 @@ def main(src, dst):
             for p in mesh["primitives"]:
                 tris_out += gltf["accessors"][p["indices"]]["count"] // 3
     nodes[root]["children"] = new_children
-    gltf["buffers"][0]["byteLength"] = len(blob) + ((4 - len(blob) % 4) % 4)
+    live = reachable(gltf)
+    canon = canonical_materials(gltf)
+    before, after = merge_mesh_prims(gltf, blob, live, canon)
+    dropped = merge_fittings(gltf, blob, root)
+    gone = prune_unreachable(gltf)
+    blob = compact_buffers(gltf, blob)
     save_glb(dst, gltf, blob)
-    print("replaced %d static root meshes; section triangles %d" % (replaced, tris_out))
-    print("wrote", dst, os.path.getsize(dst))
-    # sanity: animations still name nodes that exist
-    names = {n.get("name") for n in gltf["nodes"]}
+    # Surfaces Godot will draw: one per primitive on a scene mesh.
+    prims = 0
+    tris = 0
+    for n in gltf["nodes"]:
+        if "mesh" not in n:
+            continue
+        for p in gltf["meshes"][n["mesh"]]["primitives"]:
+            prims += 1
+            tris += _tri_count(gltf, p)
+    names = [n.get("name") for n in gltf["nodes"]]
     missing = []
     for a in gltf["animations"]:
         for ch in a["channels"]:
             nm = gltf["nodes"][ch["target"]["node"]].get("name")
             if nm not in names:
-                missing.append(nm)
+                missing.append((a["name"], nm))
+    print("replaced %d static root meshes; section triangles %d" % (replaced, tris_out))
+    print("primitives %d -> %d on live meshes; fittings absorbed %d nodes; pruned %d" % (before, after, dropped, gone))
+    print("scene primitives", prims, "triangles", tris)
     print("animations", len(gltf["animations"]), "missing targets", missing)
+    print("wrote", dst, os.path.getsize(dst))
 
 
 if __name__ == "__main__":

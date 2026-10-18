@@ -34,6 +34,7 @@ var popups: Array = []            # hit callouts over the ships: [ship 0/1, head
 var sun: DirectionalLight3D
 var beam_vis: Array = []         # lasers firing this frame: [emitter world position, hot spot world position, colour]
 var fc_lines := true             # B: show the fire-control lines (a HUD aid; the beams themselves are invisible)
+var laser_beams := false         # L: also draw the beams. Off by default; a beam in vacuum is not visible from the side
 var yaw := 0.9
 var pitch := 0.42
 var dist := 320.0
@@ -152,6 +153,8 @@ func _ready() -> void:
 	# drive the GPU flat out for a tactical view), fire-control lines, briefing.
 	Settings.load_and_apply()
 	fc_lines = Settings.fc_lines
+	laser_beams = Settings.laser_beams
+	if OS.get_cmdline_user_args().has("--beams"): laser_beams = true
 	DisplayServer.window_set_title("TDC Demo " + Version.text())
 	sfx = Sfx.new()
 	add_child(sfx)
@@ -391,6 +394,7 @@ func _start(cls: int, brief := true) -> void:
 	tplot.reset()
 	aar = AAR.new()
 	fc_lines = Settings.fc_lines
+	laser_beams = Settings.laser_beams or OS.get_cmdline_user_args().has("--beams")
 	if brief and shot_path == "" and bench_frames == 0 and Briefing.wanted():
 		battle.set_speed(0)          # the first battle waits while the briefing is up
 		_brief_paused = true
@@ -574,6 +578,10 @@ func _update_world(delta: float) -> void:
 	foe_model.show_state(foe, delta)
 	own_model.aim(own["turret_aim"])
 	foe_model.aim(foe["turret_aim"])
+	own_model.beam_fx = laser_beams
+	foe_model.beam_fx = laser_beams
+	own_model.aim_sensor(foe_model.global_position)
+	foe_model.aim_sensor(own_model.global_position)
 	planet.position = Vector3(0, -(MARS_R + ALT), 0)
 	# Camera: orbit (or chase) the ship in view; the view is rolled a little so the planet's limb runs across the lower left.
 	var target_node: Node3D = foe_model if view_target else own_model
@@ -588,8 +596,8 @@ func _update_world(delta: float) -> void:
 	if absf(sun.directional_shadow_max_distance - (dist + 260.0)) > 1.0: sun.directional_shadow_max_distance = dist + 260.0
 	var fwd := (target_node.position - cam.position).normalized()
 	cam.look_at(target_node.position, Vector3.UP.rotated(fwd, -0.38))
-	# Lasers: no visible beam (see ShipModel), but a hot spot where it lands, a faint glow at each firing emitter, and
-	# fire-control lines between them drawn on the overlay (_draw_beam_lines).
+	# Lasers: a hot spot where the beam lands, a faint glow at each firing emitter, and fire-control lines on the
+	# overlay. The beam itself is drawn only when the player asks for it (L, or Settings).
 	var dtb := delta * battle_speed() if shot_path == "" else 0.1    # screenshots: let the spot heat up while posing
 	var own_fire: Array = own["turret_firing"]
 	var foe_fire: Array = foe["turret_firing"]
@@ -1603,7 +1611,7 @@ func _build_menu() -> void:
 	row2.add_child(UI.button("Settings", func(): settings_panel.open(), UI.SEC, 132))
 	row2.add_child(UI.button("Quit", func(): get_tree().quit(), UI.MUTED, 128))
 	v.add_child(row2)
-	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll left/right (again to stop) · T side-on / nose-on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · V tactical plot · B hide/show laser lines · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Right-click a target button to mark it degraded / killed · Esc pause / resume", 12, UI.FAINT)
+	var keys := UI.label("Space weapons safe/free · P pause · , . time · Q/E roll left/right (again to stop) · T side-on / nose-on · WASD/X burn direction · I ignite · F1-F3 fire mode · Tab enemy view · C chase cam · V tactical plot · B hide/show laser lines · L show laser beams · Right-drag orbit · Wheel zoom · M mute · Click an enemy part to target it · Right-click a target button to mark it degraded / killed · Esc pause / resume", 12, UI.FAINT)
 	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	keys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	keys.custom_minimum_size.x = 400
@@ -1796,6 +1804,7 @@ func _unhandled_input(e: InputEvent) -> void:
 				if tplot.visible: _toggle_plot()
 			KEY_C: chase = not chase
 			KEY_B: fc_lines = not fc_lines
+			KEY_L: laser_beams = not laser_beams
 			KEY_V: _toggle_plot()
 			KEY_Q: _helm("roll-")
 			KEY_E: _helm("roll+")

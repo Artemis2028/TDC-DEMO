@@ -13,6 +13,7 @@ static var volume := 100                 # Master bus, 0-100 %; 0 is mute
 static var window_mode := 0              # index into WINDOW_NAMES
 static var fps_cap := 120                # one of FPS_CAPS
 static var fc_lines := true              # fire-control lines shown at the start of a battle
+static var laser_beams := false          # draw the laser beams. Off: a beam in vacuum is not visible from the side
 static var show_briefing := true         # the how-to-play pages before the first battle of a session
 
 ## Read the file (missing keys keep their defaults) and apply everything. Call once, from _ready.
@@ -24,6 +25,7 @@ static func load_and_apply() -> void:
 		var cap := int(cf.get_value("display", "fps_cap", fps_cap))
 		fps_cap = cap if FPS_CAPS.has(cap) else 120
 		fc_lines = bool(cf.get_value("game", "fc_lines", fc_lines))
+		laser_beams = bool(cf.get_value("game", "laser_beams", laser_beams))
 		show_briefing = bool(cf.get_value("game", "show_briefing", show_briefing))
 	apply_volume()
 	# Screenshot and benchmark runs keep their own window and frame rate.
@@ -38,6 +40,7 @@ static func save() -> void:
 	cf.set_value("display", "window_mode", window_mode)
 	cf.set_value("display", "fps_cap", fps_cap)
 	cf.set_value("game", "fc_lines", fc_lines)
+	cf.set_value("game", "laser_beams", laser_beams)
 	cf.set_value("game", "show_briefing", show_briefing)
 	var err := cf.save(PATH)
 	if err != OK:
@@ -84,6 +87,10 @@ static func set_fc_lines(on: bool) -> void:
 	fc_lines = on
 	save()
 
+static func set_laser_beams(on: bool) -> void:
+	laser_beams = on
+	save()
+
 static func set_show_briefing(on: bool) -> void:
 	show_briefing = on
 	save()
@@ -91,5 +98,5 @@ static func set_show_briefing(on: bool) -> void:
 ## The current settings as text, for the log export.
 static func describe() -> String:
 	var cap := "unlimited" if fps_cap == 0 else str(fps_cap)
-	return "volume: %d%%\nwindow mode: %s\nframe-rate cap: %s (vsync on)\nfire-control lines at start: %s\nshow briefing at start-up: %s" % [
-		volume, WINDOW_NAMES[window_mode], cap, "on" if fc_lines else "off", "on" if show_briefing else "off"]
+	return "volume: %d%%\nwindow mode: %s\nframe-rate cap: %s (vsync on)\nfire-control lines at start: %s\nvisible laser beams at start: %s\nshow briefing at start-up: %s" % [
+		volume, WINDOW_NAMES[window_mode], cap, "on" if fc_lines else "off", "on" if laser_beams else "off", "on" if show_briefing else "off"]

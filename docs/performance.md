@@ -51,7 +51,16 @@ The Lance is now drawn with the Arbiter TDC v8 model. Same measurement as above,
 | View | Draw calls | Triangles | Script |
 |---|---:|---:|---:|
 | Dagger, own ship (class 0) | 626 | 370 k | 0.63 ms |
-| Lance, own ship (class 1) | 1242 | 468 k | 0.66 ms |
+| Lance, own ship (class 1), as imported | 1242 | 468 k | 0.66 ms |
 | Lance, enemy view (Mars) | 601 | 101 k | 0.68 ms |
 
-The Dagger row matches the table above, and the enemy view matches the old Mars row, so the extra cost is the v8 hull. It is about twice the Dagger's draw calls because the body is 37 materials, the three laser heads and four rotary mounts stay separate meshes, and each radiator wing is 12 animated segments. Joining those the way `merge_static()` joined the Dagger would flatten either the paint or the clips. Coil glows, the muzzle flash, the OMS bells and the drive plume stay hidden until they fire, so they are not in the idle count.
+The Dagger row matches the table above, and the enemy view matches the old Mars row, so the extra cost is the v8 hull. It is about twice the Dagger's draws because each surface is its own draw, and the hull is drawn again for the depth pass and for each of the four shadow cascades. The body alone was dozens of materials. The three laser heads, the rotary mounts, 24 radiator segments and 28 missile-cell lids each move on their own, so they cannot be joined without freezing a clip.
+
+What could be joined was merged, and the same bench run again:
+
+| View | Draw calls | Triangles | Script |
+|---|---:|---:|---:|
+| Dagger, own ship (class 0) | 626 | 370 k | 0.58 ms |
+| Lance, own ship (class 1), after the merge | 1183 | 465 k | 1.63 ms |
+
+Surfaces that already move together and share a look were combined (identical untextured materials on one mesh, and the loose static fittings on each section). Lids, point-defence, ammo feeds and the effect meshes no longer cast shadows. The glTF file dropped from 45 MB to 35 MB because the pre-split hull buffers were no longer referenced. Triangles barely moved: joining does not delete them. The Dagger is untouched. The Lance's remaining gap is the parts the clips actually move, plus paints that are genuinely different. The higher script time is the sensor aim and the charge seek, measured on llvmpipe.
