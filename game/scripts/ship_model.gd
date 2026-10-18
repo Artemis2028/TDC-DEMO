@@ -1,9 +1,11 @@
 class_name ShipModel
 extends Node3D
-## A ship as the game draws it: the hull is a model built in Blender (art/build_ships.py, exported to
-## models/earth.glb and models/mars.glb); this script finds the named parts in it and brings them to life:
-## turrets turn toward the target, radiators fold and glow with heat, OMS jets and the drive plume show the burn,
-## knocked-out turrets go dark, and the armour view tints each hull section by its condition.
+## A ship as the game draws it. Mars and the lasers-only Dagger come from models/mars.glb and models/earth.glb
+## (art/build_ships.py, art/import_dagger.py). The Lance, the Earth ship that carries the coilgun, is the Arbiter
+## TDC v8 hull (models/arbiter.glb): same axis convention, its own mesh, and the clips exported with it.
+## This script finds the named parts and brings them to life: turrets turn toward the target, radiators fold and
+## glow with heat, OMS jets and the drive plume show the burn, knocked-out turrets go dark, and the armour view
+## tints each hull section by its condition.
 ## The nose points along -Z, +X is the ship's right and +Y its top.
 
 var length := 160.0
@@ -43,6 +45,21 @@ static var _glow_tex: GradientTexture2D
 var gun_breech: Node3D                # barrel ends of the spinal gun (markers from the Blender scripts)
 var gun_muzzle: Node3D
 var _shots: Array = []               # firing effects in progress: [age s, wave ring, barrel glow, muzzle flash, jet, light]
+## Lance only. The Arbiter is a different hull from the Dagger, so it keeps its own rig and the glTF clips.
+var arbiter := false
+var _arbiter_rig: Array = []         # per sim turret: [yaw, pitch, rest yaw, rest pitch, beam dir in yaw space, head materials, alpha, beta]
+var _rad_player: AnimationPlayer
+var _drive_player: AnimationPlayer
+var _gun_player: AnimationPlayer
+var _drive_node: Node3D
+var _drive_clip := ""
+var _oms_jets: Array = []            # [node, exhaust direction in ship space, station "F"/"A"]
+var _gun_fx: Array = []              # coil glows and muzzle flash, hidden until a shot
+var _gun_fx_left := 0.0
+## Armoured nose tip to the drive throat in the authored file. Scaled up to the Earth length both classes share.
+const ARBITER_NATIVE_LENGTH := 161.36
+## Sim turret 0, 1, 2 (mounts at 45, 135, 315 deg) -> the visual head whose mount is nearest: dorsal, port, starboard.
+const ARBITER_TURRET_VISUAL := [2, 1, 3]
 ## Gun firing effect timing (real seconds, not battle time, so it reads the same at any time speed).
 const GUN_WAVE_TIME := 0.16           # the light running up the coils, breech to muzzle
 const GUN_FADE_TIME := 0.9            # barrel afterglow and muzzle flash fading out
@@ -51,50 +68,16 @@ const OMS_FWD := 0.10      # OMS stations (fractions of the length from the nose
 const OMS_AFT := 0.765
 
 ## Build the ship. gun_kind: 0 none, 1 railgun, 2 coilgun.
+## Earth has two hulls: the Dagger (lasers only) keeps models/earth.glb; the Lance (coilgun) is the Arbiter.
 func build(is_mars: bool, gun_kind: int) -> void:
 	mars = is_mars
 	length = 130.0 if mars else 193.6
+	if not mars and gun_kind == 2:
+		_build_arbiter()
+		return
 	var root: Node3D = (load("res://models/mars.glb" if mars else "res://models/earth.glb") as PackedScene).instantiate()
 	add_child(root)
-	var grid := _grid_texture()
-	# Materials: this ship gets its own copies so tinting one ship never touches the other. One copy per source
-	# material and role (section, radiator panel), shared by every surface that uses it: far fewer materials to
-	# update and to switch between when drawing. Turret domes keep one each, since a dead turret's dome is scorched.
-	var copies := {}
-	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
-		var sec := -1
-		var n := String(mi.name)
-		if n.begins_with("N_"): sec = 0
-		elif n.begins_with("B_"): sec = 1
-		elif n.begins_with("A_"): sec = 2
-		var radiator := _under_rad_pivot(mi)
-		for si in mi.mesh.get_surface_count():
-			var src := mi.get_active_material(si) as StandardMaterial3D
-			if src == null: continue
-			var rad_panel := radiator and n.begins_with("Rad") and n.length() < 14
-			var key := "%d/%d/%s/%s" % [src.get_instance_id(), sec, radiator, n if n.begins_with("B_dome") else ("P" if rad_panel else "")]
-			if copies.has(key):
-				mi.set_surface_override_material(si, copies[key])
-				continue
-			var m := src.duplicate() as StandardMaterial3D
-			copies[key] = m
-			if radiator:
-				if n.begins_with("Rad") and n.length() < 14:
-					m.albedo_texture = grid           # generated panels carry no texture of their own
-					m.uv1_scale = Vector3(3, 2, 1)
-				# fins (dark surfaces) glow with heat; frames and brackets don't
-				if m.albedo_color.get_luminance() < 0.25 or n.begins_with("Rad") and n.length() < 14:
-					m.emission_enabled = true
-					m.emission = Color(0.55, 0.12, 0.03)
-					m.emission_energy_multiplier = 0.0
-					radiators.append([m, m.albedo_color])
-			elif sec >= 0 and not m.emission_enabled:
-				# Emission stays switched on (black in the normal view): toggling it would compile a new shader
-				# variant, a hitch, the first time the armour view opens.
-				m.emission_enabled = true
-				m.emission = Color.BLACK
-				sec_parts[sec].append([m, m.albedo_color])
-			mi.set_surface_override_material(si, m)
+	_bind_hull_materials(root, _grid_texture())
 	for p: Node3D in root.find_children("RadPivot*", "Node3D", true, false):
 		rad_pivots.append(p)
 	# turrets
@@ -247,6 +230,9 @@ func _show_oms(exhaust: Vector3) -> void:
 ## nearer the last azimuth is used, and near straight-out the azimuth is held, so the base never spins round.
 func aim(aims: Array) -> void:
 	if not is_inside_tree(): return
+	if arbiter:
+		_aim_arbiter(aims)
+		return
 	for k in mini(turrets.size(), aims.size()):
 		var t: Array = turrets[k]
 		var head: Node3D = t[0]
@@ -269,6 +255,8 @@ func aim(aims: Array) -> void:
 ## muzzle, the barrel glows behind it and cools; at the muzzle a flash and a short plasma jet (the armature's
 ## vaporised trailing edge), and a brief light that catches the hull. The round itself is drawn by main.gd.
 func fire_gun() -> void:
+	if arbiter:
+		_fire_arbiter_gun()
 	if gun_breech == null or gun_muzzle == null: return
 	var colour := Color(1.0, 0.55, 0.25) if mars else Color(0.55, 0.8, 1.0)
 	var wave := MeshInstance3D.new()
@@ -319,6 +307,11 @@ func _glow_mat(c: Color) -> StandardMaterial3D:
 
 ## Advance the firing effects (real time).
 func _process(delta: float) -> void:
+	if arbiter and _gun_fx_left > 0.0:
+		_gun_fx_left -= delta
+		if _gun_fx_left <= 0.0:
+			for n: Node3D in _gun_fx:
+				n.visible = false
 	if _shots.is_empty(): return
 	var a := to_local(gun_breech.global_position)
 	var b := to_local(gun_muzzle.global_position)
@@ -526,29 +519,32 @@ func show_state(s: Dictionary, delta: float) -> void:
 	_rad_open = move_toward(_rad_open, target, delta * 0.8)
 	var health: PackedFloat64Array = s["health"]
 	var glow: float = clamp((float(s["heat"]) - 30.0) / 70.0, 0.0, 1.0) * 1.5
-	if _rad_open != _rad_shown:
-		_rad_shown = _rad_open
-		for p: Node3D in rad_pivots:
-			p.scale = Vector3(max(0.04, _rad_open), 1, 1)
+	if arbiter:
+		_show_arbiter(s, glow)
+	else:
+		if _rad_open != _rad_shown:
+			_rad_shown = _rad_open
+			for p: Node3D in rad_pivots:
+				p.scale = Vector3(max(0.04, _rad_open), 1, 1)
+		plume.visible = s["burning"]
+		if plume.visible:
+			var th: float = clampf(float(s["throttle"]), 0.0, 1.0)
+			plume.scale = Vector3(1, 1, lerpf(DRIVE_PLUME_MIN, DRIVE_PLUME_MAX, th))
+			plume_mat.set_shader_parameter("strength", lerpf(0.9, 3.2, th) * (0.94 + 0.06 * sin(Time.get_ticks_msec() * 0.03)))
+		# OMS: the push in the battle plane, from (forward, left) in ship axes, turned into this model's own axes
+		var oms: Vector2 = s["oms"]
+		var h: float = s["heading"]
+		var push_sim := Vector2(cos(h), sin(h)) * oms.x + Vector2(-sin(h), cos(h)) * oms.y
+		var push_world := Vector3(push_sim.x, 0, -push_sim.y)
+		_show_oms(global_transform.basis.inverse() * (-push_world) if oms.length() > 0.01 and is_inside_tree() else Vector3.ZERO)
 	var rad_dead: bool = health[4] <= 0
 	if absf(glow - _glow_shown) > 0.004 or rad_dead != _rad_dead_shown:
 		_glow_shown = glow
 		_rad_dead_shown = rad_dead
 		for rd in radiators:
-			var m: StandardMaterial3D = rd[0]
-			m.emission_energy_multiplier = glow
-			m.albedo_color = rd[1] if not rad_dead else Color(0.3, 0.06, 0.04)
-	plume.visible = s["burning"]
-	if plume.visible:
-		var th: float = clampf(float(s["throttle"]), 0.0, 1.0)
-		plume.scale = Vector3(1, 1, lerpf(DRIVE_PLUME_MIN, DRIVE_PLUME_MAX, th))
-		plume_mat.set_shader_parameter("strength", lerpf(0.9, 3.2, th) * (0.94 + 0.06 * sin(Time.get_ticks_msec() * 0.03)))
-	# OMS: the push in the battle plane, from (forward, left) in ship axes, turned into this model's own axes
-	var oms: Vector2 = s["oms"]
-	var h: float = s["heading"]
-	var push_sim := Vector2(cos(h), sin(h)) * oms.x + Vector2(-sin(h), cos(h)) * oms.y
-	var push_world := Vector3(push_sim.x, 0, -push_sim.y)
-	_show_oms(global_transform.basis.inverse() * (-push_world) if oms.length() > 0.01 and is_inside_tree() else Vector3.ZERO)
+			var rm: StandardMaterial3D = rd[0]
+			rm.emission_energy_multiplier = glow
+			rm.albedo_color = rd[1] if not rad_dead else Color(0.3, 0.06, 0.04)
 	# knocked-out turrets: lens gone, dome scorched
 	var thp: PackedFloat64Array = s["turret_hp"]
 	for k in turrets.size():
@@ -558,3 +554,315 @@ func show_state(s: Dictionary, delta: float) -> void:
 		if view_mode == 0:
 			var dc: Color = Color(0.22, 0.08, 0.05) if dead else turrets[k][4]
 			if dm.albedo_color != dc: dm.albedo_color = dc
+		if arbiter and k < _arbiter_rig.size() and view_mode == 0:
+			for part in _arbiter_rig[k][5]:
+				var hm: StandardMaterial3D = part[0]
+				var hc: Color = Color(0.22, 0.08, 0.05) if dead else part[1]
+				if hm.albedo_color != hc: hm.albedo_color = hc
+
+# ------------------------------------------------------------------ materials
+
+## Copies of the hull materials, one per source material and role, so tinting this ship never touches another.
+## Section meshes are named N_ / B_ / A_. Radiator fins under a RadPivot glow with heat.
+func _bind_hull_materials(root: Node3D, grid: ImageTexture) -> void:
+	var copies := {}
+	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
+		var sec := -1
+		var n := String(mi.name)
+		if n.begins_with("N_"): sec = 0
+		elif n.begins_with("B_"): sec = 1
+		elif n.begins_with("A_"): sec = 2
+		var radiator := _under_rad_pivot(mi)
+		for si in mi.mesh.get_surface_count():
+			var src := mi.get_active_material(si) as StandardMaterial3D
+			if src == null: continue
+			var rad_panel := radiator and n.begins_with("Rad") and n.length() < 14
+			var key := "%d/%d/%s/%s" % [src.get_instance_id(), sec, radiator, n if n.begins_with("B_dome") else ("P" if rad_panel else "")]
+			if copies.has(key):
+				mi.set_surface_override_material(si, copies[key])
+				continue
+			var m := src.duplicate() as StandardMaterial3D
+			copies[key] = m
+			if radiator:
+				if n.begins_with("Rad") and n.length() < 14:
+					m.albedo_texture = grid           # generated panels carry no texture of their own
+					m.uv1_scale = Vector3(3, 2, 1)
+				# fins (dark surfaces) glow with heat; frames and brackets don't
+				if m.albedo_color.get_luminance() < 0.25 or n.begins_with("Rad") and n.length() < 14:
+					m.emission_enabled = true
+					m.emission = Color(0.55, 0.12, 0.03)
+					m.emission_energy_multiplier = 0.0
+					radiators.append([m, m.albedo_color])
+			elif sec >= 0 and not m.emission_enabled:
+				# Emission stays switched on (black in the normal view): toggling it would compile a new shader
+				# variant, a hitch, the first time the armour view opens.
+				m.emission_enabled = true
+				m.emission = Color.BLACK
+				sec_parts[sec].append([m, m.albedo_color])
+			mi.set_surface_override_material(si, m)
+
+# ------------------------------------------------------------------ Arbiter (Lance)
+
+## The coilgun Earth's hull. Native metres are a little shorter than the Dagger, so the root is scaled to the
+## Earth length the camera, nameplate and sensor view already assume. Nose, origin and axes already match.
+func _build_arbiter() -> void:
+	arbiter = true
+	var root: Node3D = (load("res://models/arbiter.glb") as PackedScene).instantiate()
+	root.scale = Vector3.ONE * (length / ARBITER_NATIVE_LENGTH)
+	add_child(root)
+	_bind_hull_materials(root, _grid_texture())
+	_bind_arbiter_radiators(root)
+	_build_arbiter_turrets(root)
+	_build_arbiter_markers(root)
+	_build_arbiter_oms(root)
+	_build_arbiter_anims(root)
+	var far := root.find_child("Target_Track_Point", true, false) as Node3D
+	if far: far.position = Vector3.ZERO
+	# Hull size from the section meshes, in this node's space (the root scale included).
+	var box := AABB()
+	var first := true
+	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
+		var nm := String(mi.name)
+		# The pressure hull only. Mounts, doors and the point-defence lattices sit outside it and would
+		# push a beam's hot spot off the skin.
+		if nm != "N_hull" and nm != "B_hull" and nm != "A_hull": continue
+		var bb: AABB = _xform_under(mi) * mi.get_aabb()
+		box = bb if first else box.merge(bb)
+		first = false
+	if not first:
+		hull_r = 0.5 * minf(box.size.x, box.size.y)
+		hull_z = Vector2(box.position.z, box.end.z)
+	_build_beam_glows()
+	# The Arbiter brings its own plume. This dummy keeps the Dagger path's field from being read unready.
+	plume = MeshInstance3D.new()
+	plume.visible = false
+	add_child(plume)
+	plume_mat = ShaderMaterial.new()
+
+## Transform of n in this ship's space, including the scaled model root. Valid before the ship enters the tree.
+func _xform_under(n: Node3D) -> Transform3D:
+	var x := Transform3D.IDENTITY
+	var p: Node = n
+	while p != null and p != self:
+		x = (p as Node3D).transform * x
+		p = p.get_parent()
+	return x
+
+## Dark radiator skins glow with heat, the same way the Dagger's fins do. One shared copy per source material.
+func _bind_arbiter_radiators(root: Node3D) -> void:
+	var copies := {}
+	for mi: MeshInstance3D in root.find_children("Radiator_*Geo", "MeshInstance3D", true, false):
+		for si in mi.mesh.get_surface_count():
+			var src := mi.get_active_material(si) as StandardMaterial3D
+			if src == null: continue
+			var id := src.get_instance_id()
+			if copies.has(id):
+				mi.set_surface_override_material(si, copies[id])
+				continue
+			var m := src.duplicate() as StandardMaterial3D
+			copies[id] = m
+			mi.set_surface_override_material(si, m)
+			if m.albedo_color.get_luminance() < 0.25:
+				m.emission_enabled = true
+				m.emission = Color(0.55, 0.12, 0.03)
+				m.emission_energy_multiplier = 0.0
+				radiators.append([m, m.albedo_color])
+
+## Three laser heads. Each sim turret drives the visual mount nearest its arc, and a marker at the aperture
+## (the beam mesh itself stays hidden: a beam in vacuum is not drawn).
+func _build_arbiter_turrets(root: Node3D) -> void:
+	for k in 3:
+		var vis: int = ARBITER_TURRET_VISUAL[k]
+		var tag := "%02d" % vis
+		var yaw := root.find_child("Turret_%s_Yaw" % tag, true, false) as Node3D
+		var pitch := root.find_child("Turret_%s_Pitch" % tag, true, false) as Node3D
+		var beam := root.find_child("Turret_%s_LaserBeam" % tag, true, false) as Node3D
+		if yaw == null or pitch == null or beam == null:
+			push_error("Arbiter turret %s is missing a yaw, pitch or beam node" % tag)
+			continue
+		beam.visible = false
+		var muzzle := Marker3D.new()
+		muzzle.name = "Muzzle%d" % k
+		muzzle.position = beam.position
+		pitch.add_child(muzzle)
+		var b0: Vector3 = (pitch.transform.basis * (beam.transform.basis * Vector3.UP)).normalized()
+		var mats: Array = []
+		var geo := root.find_child("Turret_%s_Pitch_Geo" % tag, true, false) as MeshInstance3D
+		if geo:
+			for si in geo.mesh.get_surface_count():
+				var src := geo.get_active_material(si) as StandardMaterial3D
+				if src == null: continue
+				var m := src.duplicate() as StandardMaterial3D
+				geo.set_surface_override_material(si, m)
+				mats.append([m, m.albedo_color])
+		# Stand-in for the Dagger's lens mesh, so the shared dead-turret path has a node to hide.
+		# It has to live in the tree: an orphaned MeshInstance3D leaks its cull instance on quit.
+		var lens := MeshInstance3D.new()
+		lens.name = "Lens%d" % k
+		pitch.add_child(lens)
+		var dummy := StandardMaterial3D.new()
+		_arbiter_rig.append([yaw, pitch, yaw.quaternion, pitch.quaternion, b0, mats, 0.0, 0.0])
+		turrets.append([pitch, muzzle, lens, dummy, dummy.albedo_color, yaw, yaw.basis, pitch.basis, 0.0])
+
+## Reference points the HUD, the hot spot and the firing effect already look up by name.
+func _build_arbiter_markers(root: Node3D) -> void:
+	var recoil := root.find_child("Coilgun_A093_Barrel_Recoil", true, false) as Node3D
+	var flash := root.find_child("Coilgun_MuzzleFlash", true, false) as Node3D
+	gun_breech = recoil
+	gun_muzzle = flash
+	# Drive, Laser, Gun, Sensors, Radiators, Crew, in authored metres (the root scale carries them out).
+	var places := [Vector3(0, 0, 74), Vector3(0, 14, -29), Vector3(0, -12.4, -36),
+		Vector3(0, 13, 23), Vector3(0, 22, 50), Vector3(0, 0, -55)]
+	for i in places.size():
+		var m := Marker3D.new()
+		m.name = "Sys%d" % i
+		m.position = places[i]
+		root.add_child(m)
+		sys_nodes.append(m)
+	for n in root.find_children("Coilgun_Coil_*_Glow", "Node3D", true, false):
+		if String(n.name).ends_with("_Geo"): continue
+		n.visible = false
+		n.scale = Vector3.ZERO
+		_gun_fx.append(n)
+	for nm in ["Coilgun_MuzzleFlash", "Coilgun_MuzzleFlare"]:
+		var fx := root.find_child(nm, true, false) as Node3D
+		if fx:
+			fx.visible = false
+			_gun_fx.append(fx)
+	var shot := root.find_child("Coilgun_Projectile", true, false) as Node3D
+	if shot: shot.visible = false
+	_drive_node = root.find_child("MainDrive_A001-A004_Plume", true, false) as Node3D
+	if _drive_node:
+		_drive_node.visible = false
+
+## The model's own bells. Radial and tangent plumes point across the hull; fore and aft stations stand in for a
+## burn along the ship, the same stations the Dagger lights.
+func _build_arbiter_oms(root: Node3D) -> void:
+	var clusters := [
+		["OMS_A010_Fore_Bottom", "F"], ["OMS_A011_Fore_Port", "F"], ["OMS_A012_Fore_Stbd", "F"], ["OMS_A013_Fore_Top", "F"],
+		["OMS_A006_Aft_Bottom", "A"], ["OMS_A007_Aft_Port", "A"], ["OMS_A008_Aft_Stbd", "A"], ["OMS_A009_Aft_Top", "A"],
+	]
+	for c in clusters:
+		for kind in ["Radial", "TangentA", "TangentB"]:
+			var n := root.find_child("%s_Plume_%s" % [c[0], kind], true, false) as Node3D
+			if n == null: continue
+			var dir := (_xform_under(n).basis * Vector3.UP).normalized()
+			n.visible = false
+			n.scale = Vector3.ZERO
+			_oms_jets.append([n, dir, c[1]])
+
+func _share_player(src: AnimationPlayer, pname: String) -> AnimationPlayer:
+	var p := AnimationPlayer.new()
+	p.name = pname
+	src.get_parent().add_child(p)
+	p.root_node = src.root_node
+	var lib := AnimationLibrary.new()
+	for lname in src.get_animation_library_list():
+		var slib := src.get_animation_library(lname)
+		for aname in slib.get_animation_list():
+			lib.add_animation(aname, slib.get_animation(aname).duplicate())
+	p.add_animation_library("", lib)
+	return p
+
+## Clips stay on the imported player. Radiators are posed from RadiatorDeploy (0 stowed, 1 deployed). The drive
+## and the gun each have their own player so a shot does not cancel the wings.
+func _build_arbiter_anims(root: Node3D) -> void:
+	var ap := root.find_child("AnimationPlayer", true, false) as AnimationPlayer
+	if ap == null:
+		push_error("Arbiter model has no AnimationPlayer")
+		return
+	_rad_player = ap
+	_drive_player = _share_player(ap, "DriveAnims")
+	_gun_player = _share_player(ap, "GunAnims")
+	for nm in ["MainDriveIdle", "MainDriveLow", "MainDriveMedium", "MainDriveFull"]:
+		if _drive_player.has_animation(nm):
+			_drive_player.get_animation(nm).loop_mode = Animation.LOOP_LINEAR
+	if _rad_player.has_animation("RadiatorDeploy"):
+		var anim := _rad_player.get_animation("RadiatorDeploy")
+		_rad_player.speed_scale = 0.0
+		_rad_player.play("RadiatorDeploy")
+		_rad_player.seek(anim.length, true)
+		_rad_player.pause()
+
+## Point the visual head along the sim's aim. Yaw spins the mount about its local Y; pitch, about the head's
+## local Z. The beam mesh lies in the yaw node's XY plane, so pitch sets the component along the yaw axis and
+## yaw swings the rest.
+func _aim_arbiter(aims: Array) -> void:
+	for k in mini(_arbiter_rig.size(), aims.size()):
+		var rec: Array = _arbiter_rig[k]
+		var yaw: Node3D = rec[0]
+		var pitch: Node3D = rec[1]
+		var rest_y: Quaternion = rec[2]
+		var rest_p: Quaternion = rec[3]
+		var b0: Vector3 = rec[4]
+		var a: Vector3 = aims[k]
+		var world_dir := (global_transform.basis.orthonormalized() * Vector3(a.y, a.z, -a.x)).normalized()
+		var parent_basis := (yaw.get_parent() as Node3D).global_transform.basis.orthonormalized()
+		var d_local := (rest_y.inverse() * (parent_basis.inverse() * world_dir)).normalized()
+		var y := clampf(d_local.y, -1.0, 1.0)
+		var xmag := sqrt(maxf(0.0, 1.0 - y * y))
+		var x := xmag if b0.x >= 0.0 else -xmag
+		var alpha: float = rec[6]
+		if absf(x) > 0.02:
+			alpha = atan2(-d_local.z / x, d_local.x / x)
+		var beta := atan2(y, x) - atan2(b0.y, b0.x)
+		beta = wrapf(beta, -PI, PI)
+		rec[6] = alpha
+		rec[7] = beta
+		yaw.quaternion = rest_y * Quaternion(Vector3(0, 1, 0), alpha)
+		pitch.quaternion = rest_p * Quaternion(Vector3(0, 0, 1), beta)
+
+func _show_arbiter(s: Dictionary, _glow: float) -> void:
+	if _rad_player and _rad_player.has_animation("RadiatorDeploy") and _rad_open != _rad_shown:
+		_rad_shown = _rad_open
+		var anim := _rad_player.get_animation("RadiatorDeploy")
+		_rad_player.speed_scale = 0.0
+		_rad_player.play("RadiatorDeploy")
+		_rad_player.seek(_rad_open * anim.length, true)
+		_rad_player.pause()
+	if _drive_node:
+		var burning: bool = s["burning"]
+		_drive_node.visible = burning
+		if burning and _drive_player:
+			var th: float = clampf(float(s["throttle"]), 0.0, 1.0)
+			var clip := "MainDriveFull" if th > 0.8 else ("MainDriveMedium" if th > 0.45 else ("MainDriveLow" if th > 0.15 else "MainDriveIdle"))
+			if clip != _drive_clip:
+				_drive_clip = clip
+				_drive_player.play(clip)
+		elif _drive_player and _drive_player.is_playing():
+			_drive_player.stop()
+			_drive_clip = ""
+	var oms: Vector2 = s["oms"]
+	var exhaust := Vector3.ZERO
+	if oms.length() > 0.01 and is_inside_tree():
+		var h: float = s["heading"]
+		var push_sim := Vector2(cos(h), sin(h)) * oms.x + Vector2(-sin(h), cos(h)) * oms.y
+		var push_world := Vector3(push_sim.x, 0, -push_sim.y)
+		exhaust = global_transform.basis.inverse() * (-push_world)
+	_show_oms_arbiter(exhaust)
+
+func _show_oms_arbiter(exhaust: Vector3) -> void:
+	var radial := Vector3(exhaust.x, exhaust.y, 0)
+	var radial_n := radial.normalized() if radial.length() > 0.2 else Vector3.ZERO
+	for rec in _oms_jets:
+		var n: Node3D = rec[0]
+		var dir: Vector3 = rec[1]
+		var station: String = rec[2]
+		var on := false
+		if radial_n != Vector3.ZERO and dir.dot(radial_n) > 0.55:
+			on = true
+		if exhaust.z < -0.2 and station == "F":
+			on = true
+		if exhaust.z > 0.2 and station == "A":
+			on = true
+		n.visible = on
+		n.scale = Vector3.ONE if on else Vector3.ZERO
+
+## The coil lights in the model (CoilgunFire) plus the running wave the other ships use. The model's projectile
+## stays hidden: the round in flight is the one main.gd draws from the sim.
+func _fire_arbiter_gun() -> void:
+	if _gun_player == null or not _gun_player.has_animation("CoilgunFire"): return
+	for n: Node3D in _gun_fx:
+		n.visible = true
+	_gun_player.play("CoilgunFire")
+	_gun_fx_left = _gun_player.get_animation("CoilgunFire").length

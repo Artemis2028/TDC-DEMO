@@ -3,6 +3,11 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.13.0
+- The Lance (laser and spinal coilgun) is drawn with the Arbiter TDC v8 hull. The Dagger keeps the previous Earth
+  model, and the Mars frigate is unchanged. The v8 clips for the radiator wings, the main drive and the coilgun
+  firing are driven from the battle; the others stay in the file.
+
 ## v0.12.1
 - **Esc pauses the battle.** Esc in battle opens the menu with the fight frozen underneath, and a **Resume battle**
   button (or Esc again) takes you back exactly where you left off. Before, the menu offered no way back and the

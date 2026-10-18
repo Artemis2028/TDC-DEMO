@@ -43,3 +43,15 @@ At 60 fps it runs one frame in four.
 Kept as is: 4x MSAA. At 2x the hull's panel seams break into dashes, checked side by side.
 
 The simulation itself costs about 1 to 3 microseconds per tick, so it was left alone.
+
+## Arbiter hull (v0.13.0)
+
+The Lance is now drawn with the Arbiter TDC v8 model. Same measurement as above, 20 frames after a 60-frame warm-up, battle paused (`--bench 20 --speed 0`):
+
+| View | Draw calls | Triangles | Script |
+|---|---:|---:|---:|
+| Dagger, own ship (class 0) | 626 | 370 k | 0.63 ms |
+| Lance, own ship (class 1) | 1242 | 468 k | 0.66 ms |
+| Lance, enemy view (Mars) | 601 | 101 k | 0.68 ms |
+
+The Dagger row matches the table above, and the enemy view matches the old Mars row, so the extra cost is the v8 hull. It is about twice the Dagger's draw calls because the body is 37 materials, the three laser heads and four rotary mounts stay separate meshes, and each radiator wing is 12 animated segments. Joining those the way `merge_static()` joined the Dagger would flatten either the paint or the clips. Coil glows, the muzzle flash, the OMS bells and the drive plume stay hidden until they fire, so they are not in the idle count.
