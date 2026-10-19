@@ -226,6 +226,8 @@ func _ready() -> void:
 			battle.set_burn(int(args[args.find("--burn") + 1]), throttle)
 		if args.has("--oms"):
 			battle.set_oms_strafe(int(args[args.find("--oms") + 1]))
+		if args.has("--rad"):
+			battle.set_radiators(int(args[args.find("--rad") + 1]) != 0)
 		while battle.get_time() < shot_at and battle.get_winner() < 0:
 			battle.advance(1.0)
 			_track_heat()
@@ -668,8 +670,11 @@ func _update_world(delta: float) -> void:
 	foe_model.rotation = Vector3(0, _ahead_angle(float(foe["heading"]), _ex_h[1], alpha) - PI / 2, foe_roll)
 	own_model.view_mode = 1 if armor_view else 0
 	foe_model.view_mode = 1 if armor_view and view_target and battle.get_sensor_quality() > 0.5 else 0
-	own_model.show_state(own, delta)
-	foe_model.show_state(foe, delta)
+	# A still has to show the pose the sim is already in. The wing fold takes about a second in play;
+	# the capture finishes it so a stowed ship is not photographed half-open.
+	var pose_delta := delta if shot_path == "" else maxf(delta, 2.0)
+	own_model.show_state(own, pose_delta)
+	foe_model.show_state(foe, pose_delta)
 	own_model.aim(own["turret_aim"], delta if shot_path == "" else -1.0)
 	foe_model.aim(foe["turret_aim"], delta if shot_path == "" else -1.0)
 	own_model.beam_fx = laser_beams
@@ -730,7 +735,7 @@ func _update_world(delta: float) -> void:
 		eo_model.rotation = foe_model.rotation
 		eo_model.view_mode = foe_model.view_mode
 		eo_model.beam_fx = laser_beams
-		eo_model.show_state(foe, delta)
+		eo_model.show_state(foe, pose_delta)
 		eo_model.aim(foe["turret_aim"], delta if shot_path == "" else -1.0)
 		eo_model.show_emitters(foe_fire)
 		eo_model.update_spot(own_fire.count(true), int(own["target_sys"]), int(own["target_turret"]), own_model.position, dtb)
@@ -785,12 +790,12 @@ func _add_tooltips() -> void:
 	for i in tgt_btns.size():
 		tip.call(tgt_btns[i], "Aim at the enemy's %s. The number is your crew's estimate (≈), not the truth.\nRight-click to mark it degraded or killed." % str(SYS_NAMES[int(TARGETS[i][0])]).to_lower())
 	var helm_tips := ["Roll left (Q). Rolling turns fresh armour panels to the beam; press again to stop.",
-		"Burn toward the enemy (W). Main drive along the nose: strong, but it adds heat.",
+		"Close range (W). The main drive, along the nose, when the nose is within 30° of the enemy: strong, and it adds heat. If the nose is farther off than that, the forward OMS pods push instead.",
 		"Roll right (E). Rolling turns fresh armour panels to the beam; press again to stop.",
 		"Match velocity with the enemy (X): burn until the range stops changing.",
-		"Sideways burn left (A) on the OMS pods: weak, but the nose stays on the enemy. During a closing burn it fires as well as the main drive, it does not replace it.",
-		"Burn away from the enemy (S) to open the range or brake.",
-		"Sideways burn right (D) on the OMS pods: weak, but the nose stays on the enemy. During a closing burn it fires as well as the main drive, it does not replace it.",
+		"OMS pods, push left (A): weak, but the nose stays on the enemy. During a closing burn it fires as well as the main drive, it does not replace it.",
+		"Open range (S). The aft OMS pods. The main drive cannot push backward, so braking and opening the range is always the pods.",
+		"OMS pods, push right (D): weak, but the nose stays on the enemy. During a closing burn it fires as well as the main drive, it does not replace it.",
 		"Side-on / nose-on (T). Side-on brings every turret to bear but shows the enemy your long, thin side armour."]
 	for i in helm_btns.size(): tip.call(helm_btns[i], helm_tips[i])
 	tip.call(ignite, "Ignite / cut the drive (I) for the selected burn. Drive burns cost propellant (Δv) and heat.")
@@ -1004,15 +1009,20 @@ func _build_left() -> void:
 	y += 31
 	# Q / E roll about the ship's own axis (press again to stop); the nose stays where the facing order puts it.
 	# T swings between nose-on (default) and side-on to the enemy.
-	var helm := [["Q", "⟲ Roll", "roll-"], ["W", "▲ Close", 1], ["E", "Roll ⟳", "roll+"], ["X", "Match", 5],
-		["A", "◀ Left", 3], ["S", "▼ Open", 2], ["D", "Right ▶", 4], ["T", "Side on", "side"]]
+	# Close range is the main drive (the nose cannot be pushed backward, so open range is the aft OMS).
+	# A and D are the lateral pods and can stack on a closing burn. There is no separate OMS mode: the
+	# order already picks the thruster, and the cap says which one.
+	var helm := [["Q", "⟲ Roll", "roll-", ""], ["W", "Close", 1, "DRIVE"], ["E", "Roll ⟳", "roll+", ""], ["X", "Match", 5, ""],
+		["A", "◀ Left", 3, "OMS"], ["S", "Open", 2, "OMS AFT"], ["D", "Right ▶", 4, "OMS"], ["T", "Side on", "side", ""]]
 	for i in helm.size():
 		var h: Array = helm[i]
 		var act = h[2]
-		var b := _btn("cap", h[1], Vector2(x + (i % 4) * (cw + 4), y + (i / 4) * 46), Vector2(cw, 42), func(): _helm(act))
-		b.top = h[0]; b.font_size = 12
+		var b := _btn("cap", h[1], Vector2(x + (i % 4) * (cw + 4), y + (i / 4) * 50), Vector2(cw, 46), func(): _helm(act))
+		b.top = h[0]
+		b.sub = h[3]
+		b.font_size = 11
 		helm_btns.append(b)
-	y += 96
+	y += 104
 	drive_txt = W.Txt.new("", 10, W.MUTED, true, 180)
 	_add(drive_txt, Vector2(x, y))
 	thr_txt = W.Txt.new("", 10, W.TEXT, true, 80)

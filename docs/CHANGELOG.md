@@ -3,6 +3,13 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.13.2
+- The coilgun wave and the barrel recoil play again. The charge seek had left the gun player at speed 0, so the firing clip never advanced. The coils are bright enough to bloom, and the bloom stays on the coil: the muzzle light is still the small one.
+- Radiators fold and deploy with the panel, including while the drive is burning. Godot's importer had put a rest key for every animated part into every clip, so the drive clip was holding the wings open. Each clip now moves only its own nodes.
+- Laser turrets and the sensor take the short arc and are already on the sim's aim at the first frame, so they do not unwind at spawn. A closing or opening burn no longer pins them: that was the same extra tracks, rewritten every frame the drive played.
+- Close range and open range are labelled with the thruster that does the work. Close range is the main drive along the nose (the forward OMS only if the nose is more than 30° off the enemy). Open range is the aft OMS, because the main drive cannot push backward. Left and right stay the lateral pods and still stack on a closing burn. There is no separate OMS mode.
+- Round housings are drawn double-sided, so a shell that was authored one-sided cannot show up open. The silhouette is still the low-poly mesh: a denser Arbiter can replace `art/source/arbiter-TDC_v8.glb` if it keeps the node names and the 13 animation names. `art/prepare_arbiter.py` checks that, smooths normals, and the import leaves mesh LODs off.
+
 ## v0.13.1
 - The battle is drawn between the 10 Hz sim steps, so the hull, the enemy and rounds in flight no longer jump ten times a second when the frame rate is higher than the sim. Turret aim eases the same way. The attitude ball uses that in-between heading and roll.
 - The sensor picture updates every frame. It is a second, unshadowed copy of the enemy, so the feed is not a second set of shadow cascades hitching the main view. Text on the panels stays at 15 Hz.

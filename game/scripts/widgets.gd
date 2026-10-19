@@ -145,6 +145,11 @@ class Btn extends Control:
 			draw_rect(Rect2(br.position.x, br.end.y - 3, br.size.x, 3), PRI_INK if on else KEY_LINE)
 			W.text_c(self, W.FM, key, br.get_center() - Vector2(0, 1), 10, PRI if on else TEXT)
 			draw_string(W.FH, Vector2(x0 + bw + 7, cy + font_size * 0.36), label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, fg)
+		elif top != "" and sub != "":
+			# Helm key, the order, and which thrusters do it. Three lines fit a 46 px cap.
+			W.text_c(self, W.FM, top, Vector2(cx, 10), 10, PRI_INK if on else FAINT)
+			W.text_c(self, W.FH, label, Vector2(cx, 24), font_size, fg)
+			W.text_c(self, W.FM, sub, Vector2(cx, 36), 9, PRI_INK if on else FAINT)
 		elif top != "":
 			W.text_c(self, W.FM, top, Vector2(cx, cy - 8), 10, PRI_INK if on else FAINT)
 			W.text_c(self, W.FH, label, Vector2(cx, cy + 7), font_size, fg)

@@ -11,6 +11,15 @@ Cuts match the Dagger's section fractions on this hull: the armoured nose
 (forward of z = -42) and the engineering aft (aft of z = 52).
 
 Run:  python art/prepare_arbiter.py [src.glb] [dst.glb]
+
+A denser hull drops in as the source glb. Keep the node names the game looks up
+(turret yaw/pitch, sensor yaw/pitch, coil glows, radiator geos, OMS plumes, the
+drive plume) and the 13 animation names below. Do not rename them and do not
+subdivide here: the silhouette comes from the file. This script paints named
+colours, caps emissive strength, smooths normals across gentle edges, and
+refuses to write a file that dropped an animation or a required node. Godot
+imports with mesh LODs off (game/models/arbiter.glb.import); it also inserts a
+rest track for every animated node into every clip, which the game strips.
 """
 import json
 import os
@@ -743,8 +752,48 @@ def compact_buffers(gltf, blob):
     return new_blob
 
 
+# Names the game binds. A replacement glb that renames these will load and then
+# silently lose the turret, the sensor, the gun or the wings.
+REQUIRED_ANIMS = (
+    "CoilgunFire", "CoilgunCharge",
+    "MainDriveIdle", "MainDriveLow", "MainDriveMedium", "MainDriveFull",
+    "OMSBurn", "RadiatorStow", "RadiatorDeploy",
+    "TurretTrack", "SensorTrack", "LaserFire", "VLSDoorOpen",
+)
+REQUIRED_NODES = (
+    "Turret_01_Yaw", "Turret_01_Pitch", "Turret_01_LaserBeam",
+    "Turret_02_Yaw", "Turret_02_Pitch", "Turret_02_LaserBeam",
+    "Turret_03_Yaw", "Turret_03_Pitch", "Turret_03_LaserBeam",
+    "Sensor_01_Yaw", "Sensor_01_Pitch",
+    "Coilgun_A093_Barrel_Recoil", "Coilgun_MuzzleFlash", "Coilgun_MuzzleFlare",
+    "Coilgun_Projectile", "MainDrive_A001-A004_Plume", "Target_Track_Point",
+)
+
+
+def check_contract(gltf):
+    names = {n.get("name") for n in gltf["nodes"]}
+    anims = {a.get("name") for a in gltf.get("animations", [])}
+    missing_n = [n for n in REQUIRED_NODES if n not in names]
+    missing_a = [a for a in REQUIRED_ANIMS if a not in anims]
+    coils = [n for n in names if n and n.startswith("Coilgun_Coil_") and n.endswith("_Glow")]
+    rads = [n for n in names if n and n.startswith("Radiator_") and n.endswith("_Geo")]
+    if not coils:
+        missing_n.append("Coilgun_Coil_*_Glow")
+    if len(rads) < 8:
+        missing_n.append("Radiator_*_Geo (found %d)" % len(rads))
+    if missing_n or missing_a:
+        raise SystemExit("replacement glb is missing nodes %s animations %s" % (missing_n, missing_a))
+    # Every material draws both sides unless a later art pass says otherwise. An open-looking
+    # housing in the coarse mesh was missing faces, not backface culling; a one-sided shell
+    # would look the same, so the flag stays on.
+    for m in gltf["materials"]:
+        m["doubleSided"] = True
+    return len(coils), len(rads)
+
+
 def main(src, dst):
     gltf, blob = load_glb(src)
+    coils, rads = check_contract(gltf)
     painted = paint_named_colors(gltf)
     capped = cap_emissive_strength(gltf)
     nodes = gltf["nodes"]
@@ -801,7 +850,7 @@ def main(src, dst):
     print("replaced %d static root meshes; section triangles %d" % (replaced, tris_out))
     print("primitives %d -> %d on live meshes; fittings absorbed %d nodes; pruned %d" % (before, after, dropped, gone))
     print("scene primitives", prims, "triangles", tris)
-    print("animations", len(gltf["animations"]), "missing targets", missing)
+    print("animations", len(gltf["animations"]), "missing targets", missing, "coils", coils, "radiator geos", rads)
     print("wrote", dst, os.path.getsize(dst))
 
 
