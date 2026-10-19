@@ -392,6 +392,10 @@ void Battle::set_burn(int ship, Burn b, double throttle) {
     static const char* n[] = {"Drive off", "Burn toward enemy", "Burn away", "Burn left", "Burn right", "Kill relative velocity"};
     log(ship, "order", n[static_cast<int>(b)]);
 }
+void Battle::set_oms_strafe(int ship, int dir) {
+    // The main drive only pushes along the nose. Lateral pods are a separate order, so they can fire during a burn.
+    ships_[ship].oms_strafe = dir > 0 ? 1 : (dir < 0 ? -1 : 0);
+}
 void Battle::set_radiators(int ship, bool extended) {
     ships_[ship].radiators_extended = extended;
     log(ship, "order", extended ? "Radiators extended" : "Radiators retracted");
@@ -608,6 +612,15 @@ void Battle::move(Ship& s) {
         }
         s.dv_left = std::max(0.0, s.dv_left - a * kDt);
         s.vel = s.vel + dir * (a * kDt);
+        // A nose burn used to zero the OMS for the whole tick. The pods can fire at the same time: the player
+        // orders a strafe and it adds the (much smaller) lateral acceleration on top of the main drive.
+        if (s.main_firing && s.oms_strafe != 0 && s.dv_left > 0) {
+            double ao = s.cls.oms_accel * s.throttle;
+            s.oms_left = static_cast<double>(s.oms_strafe);
+            s.heat += s.cls.oms_heat * s.throttle * kDt;
+            s.dv_left = std::max(0.0, s.dv_left - ao * kDt);
+            s.vel = s.vel + left * (s.oms_left * ao * kDt);
+        }
     }
     s.pos = s.pos + s.vel * kDt;
     // Rolling turns the ship about its own axis only: the nose stays where the facing order points it.

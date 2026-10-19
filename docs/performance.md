@@ -28,8 +28,8 @@ At 60 fps it runs one frame in four.
 - **Shadows:** hard-edged, cascades not blended. This removes the soft-shadow search on every lit pixel and the
   second shadow sample in the blend zones. The 4 cascades stay, because with 2 the radiator wings leak light at close
   range. The planet no longer casts shadows.
-- **EO sensor view:** rendered at 15 Hz instead of every frame, and only while the HUD is up. Its size moves in 4 px
-  steps and is set only when it changes, since each resize reallocates the image.
+- **EO sensor view:** was rendered at 15 Hz (see v0.13.1 below, which draws it every frame without a second shadow pass).
+  Its size moves in 4 px steps and is set only when it changes, since each resize reallocates the image.
 - **Ship materials:** one copy per source material and section instead of one per surface. Colours are written only
   when they change. Emission stays on, so the first armour view no longer compiles a new shader (a hitch).
 - **The unused gun** is freed, not hidden.
@@ -38,7 +38,8 @@ At 60 fps it runs one frame in four.
 - **HUD:** text, lamps, panels and the damage-control card refresh at 15 Hz, or at once after a click or key. Only
   the 3D overlay, the alerts and the attitude ball redraw every frame. The nameplate, condition badge, scope labels,
   attitude ball and teletype redraw only when what they show changes.
-- **Frame cap:** 120 fps, so a 144 to 240 Hz monitor doesn't run the GPU flat out.
+- **Frame cap:** 120 fps, so a 144 to 240 Hz monitor doesn't run the GPU flat out. v0.13.1 turns vsync off when that
+  cap is below the display refresh, because vsync and a lower cap drop frames on every other slot.
 
 Kept as is: 4x MSAA. At 2x the hull's panel seams break into dashes, checked side by side.
 
@@ -64,3 +65,26 @@ What could be joined was merged, and the same bench run again:
 | Lance, own ship (class 1), after the merge | 1183 | 465 k | 1.63 ms |
 
 Surfaces that already move together and share a look were combined (identical untextured materials on one mesh, and the loose static fittings on each section). Lids, point-defence, ammo feeds and the effect meshes no longer cast shadows. The glTF file dropped from 45 MB to 35 MB because the pre-split hull buffers were no longer referenced. Triangles barely moved: joining does not delete them. The Dagger is untouched. The Lance's remaining gap is the parts the clips actually move, plus paints that are genuinely different. The higher script time is the sensor aim and the charge seek, measured on llvmpipe.
+
+## Live battle feel (v0.13.1)
+
+The earlier tables are a paused battle. A paused battle never shows the 10 Hz stepping, the sensor hitch or a shader compile on the first shot. The same bench, own-ship Lance, battle running at 1× (`--bench 40 --class 1 --speed 2`), on llvmpipe:
+
+| | Frame | Script | Draws | Triangles | Frame sd | Min | p95 | p99 | Max |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| v0.13.0 | 133.3 ms | 1.37 ms | 1197 | 467 k | — | — | — | — | — |
+| v0.13.1 | 133.7 ms | 0.99 ms | 1190 | 657 k | 6.0 ms | 119 ms | 145 ms | 145 ms | 145 ms |
+
+Of the script time, the world update (poses, aim, drive, charge) went from 0.83 ms to 0.49 ms. The charge clip is no longer seeked on frames where the cooldown has not moved.
+
+The mean frame time did not move. On this CPU renderer a frame is about 7.5 fps and the cost is pixels: 4× MSAA, ambient occlusion, bloom and four shadow cascades. Triangles went up because mesh LODs are off for the Lance (they were collapsing thin rings and housings). Vertex work is not what this machine is waiting on, so the extra triangles did not add frame time. The measured window has no hitch: the slowest frame is 145 ms against a 134 ms mean.
+
+What that mean cannot show, and what was making a smooth frame rate feel choppy:
+
+- The sim steps at 10 Hz and the picture used to snap to the last step. Positions, headings, rolls and rounds now extrapolate across the step. The camera is still the mouse directly, with no added lag.
+- The sensor feed was a second render of the whole scene, including the four shadow cascades, 15 times a second. On a fast GPU that is a periodic spike. It now renders every frame from its own world: one unshadowed copy of the enemy, the same lights, no cascade pass.
+- Vsync stayed on under a 120 fps cap, so a 144 Hz display missed slots. A cap below the refresh now paces the frames with vsync off.
+- The first shot and the first burn compiled effect shaders mid-fight. A throwaway view draws the Dagger, the Lance and the Mars frigate, with the plume, the coils and the beams, before the menu hands over. `--bench` and `--shot` skip that, so these numbers do not include it.
+- Panel text stays at 15 Hz. The attitude ball, the overlay and the alerts were already every frame; the ball now follows the in-between heading.
+
+Radiator segments stay separate meshes. There are 24 of them, each a different shape, each keyed by RadiatorDeploy, so one MultiMesh would freeze the deploy. The missile-cell lids are few draws and already cast no shadow. The four cascades stay: with two, the radiator wings leak light at close range.

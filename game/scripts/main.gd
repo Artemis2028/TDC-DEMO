@@ -27,11 +27,18 @@ var view_vp: SubViewport
 var cam: Camera3D
 var own_model: ShipModel
 var foe_model: ShipModel
+var eo_model: ShipModel          # the enemy again, in the sensor viewport's own world, so that feed casts no shadows
 var planet: MeshInstance3D
 var alerts: Control
 var shot_vis: Array = []          # gun rounds in flight this frame: [world position, direction, colour], for the tracer
 var popups: Array = []            # hit callouts over the ships: [ship 0/1, headline, detail, colour, real time made, battle time]
 var sun: DirectionalLight3D
+var fps_meter: FpsMeter
+var _warm_vp: SubViewport
+## Last tick's heading and roll, so the draw can move between the 10 Hz steps instead of jumping.
+var _ex_h := [0.0, 0.0]
+var _ex_roll := [0.0, 0.0]
+var _ex_ready := false
 var beam_vis: Array = []         # lasers firing this frame: [emitter world position, hot spot world position, colour]
 var fc_lines := true             # B: show the fire-control lines (a HUD aid; the beams themselves are invisible)
 var laser_beams := false         # L: also draw the beams. Off by default; a beam in vacuum is not visible from the side
@@ -43,12 +50,11 @@ var view_target := false
 var chase := false
 var armor_view := false
 var roll_angle := 0.0
+var hdg_angle := 0.0          # heading drawn this frame (between sim ticks), for the attitude ball
 var foe_roll := 0.0
 
 # EO sensor
 var eo_vp: SubViewport
-var eo_wait := 0.0               # real seconds until the EO feed renders again
-const EO_HZ := 15.0
 var eo_cam: Camera3D
 
 # player-side UI state
@@ -145,15 +151,22 @@ var alerts_shown := true
 var bench_frames := 0          # --bench N: frames to measure after a 60-frame warm-up
 var bench_n := 0
 var bench_sum := {}
+var bench_times: Array[float] = []   # frame times (ms) over the measured window, for stutter
 var shot_clicks: Array = []   # --click x,y (repeatable): synthetic clicks for checking the HUD wiring headless
 
 func _ready() -> void:
 	RenderingServer.set_default_clear_color(W.BG)
-	# Saved settings: volume, window mode, frame cap (default 120: vsync stays on, but a 144-240 Hz monitor shouldn't
-	# drive the GPU flat out for a tactical view), fire-control lines, briefing.
+	# Saved settings: volume, window mode, frame cap, fire-control lines, briefing. A cap at or above the
+	# display's refresh keeps vsync; a lower cap turns vsync off so frames are not dropped on every other slot.
 	Settings.load_and_apply()
 	fc_lines = Settings.fc_lines
 	laser_beams = Settings.laser_beams
+	var layer := CanvasLayer.new()
+	layer.layer = 20
+	add_child(layer)
+	fps_meter = FpsMeter.new()
+	fps_meter.visible = Settings.show_fps
+	layer.add_child(fps_meter)
 	if OS.get_cmdline_user_args().has("--beams"): laser_beams = true
 	DisplayServer.window_set_title("TDC Demo " + Version.text())
 	sfx = Sfx.new()
@@ -192,6 +205,7 @@ func _ready() -> void:
 				shot_clicks.append(Vector2(float(xy[0]), float(xy[1])))
 	if args.has("--bench"):                # headless profiling: play N frames of a live battle, print the costs, quit
 		bench_frames = int(args[args.find("--bench") + 1])
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 		Engine.max_fps = 0
 		scenario_pick = _arg_int(args, "--scenario", 0)
 		_start(ship_class)
@@ -210,6 +224,8 @@ func _ready() -> void:
 		if args.has("--burn"):
 			throttle = float(args[args.find("--throttle") + 1]) if args.has("--throttle") else 1.0
 			battle.set_burn(int(args[args.find("--burn") + 1]), throttle)
+		if args.has("--oms"):
+			battle.set_oms_strafe(int(args[args.find("--oms") + 1]))
 		while battle.get_time() < shot_at and battle.get_winner() < 0:
 			battle.advance(1.0)
 			_track_heat()
@@ -297,18 +313,28 @@ func _build_world() -> void:
 	add_child(shine)
 	shine.look_at_from_position(Vector3.ZERO, Vector3(0.15, 1.0, 0.1), Vector3.FORWARD)
 	add_child(planet)
-	# EO sensor: a camera of its own, rendered small and blown up, so poor quality shows as big pixels.
+	# EO sensor: its own world and camera, rendered small and blown up, so poor quality shows as big pixels.
+	# Sharing the battle world made every refresh draw the sun's four shadow cascades again. On a fast machine
+	# that hitch landed 15 times a second; drawing it every frame removed the hitch by making every frame pay
+	# for two shadow passes. This feed is a second, unshadowed copy of the enemy instead.
 	eo_vp = SubViewport.new()
 	eo_vp.size = Vector2i(64, 64)
-	eo_vp.world_3d = get_world_3d()
-	# The sensor feed refreshes at EO_HZ rather than every frame: each refresh is a whole extra scene render
-	# (culling, depth, shadow cascades), and a degraded track reads fine at that rate (see _update_world).
-	eo_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	eo_vp.own_world_3d = true
+	eo_vp.render_target_update_mode = SubViewport.UPDATE_WHEN_VISIBLE
+	eo_vp.positional_shadow_atlas_size = 0
+	for lit in [[2.2, Color(1, 0.95, 0.88), Vector3(-0.8, -0.25, 0.6)],
+			[0.25, Color(0.75, 0.82, 0.95), Vector3(0.6, -0.5, -0.7)],
+			[0.35, Color(0.85, 0.45, 0.25), Vector3(0.15, 1.0, 0.1)]]:
+		var lamp := DirectionalLight3D.new()
+		lamp.light_energy = lit[0]
+		lamp.light_color = lit[1]
+		lamp.shadow_enabled = false
+		eo_vp.add_child(lamp)
+		lamp.look_at_from_position(Vector3.ZERO, lit[2], Vector3.UP if absf(lit[2].y) < 0.9 else Vector3.FORWARD)
 	eo_cam = Camera3D.new()
 	eo_cam.fov = 4.0
 	eo_cam.near = 10.0
 	eo_cam.far = 9.0e6
-	eo_cam.cull_mask = 1
 	# The EO view renders as small as 12 x 12 pixels. Bloom and ambient occlusion build chains of smaller and smaller
 	# images that cannot fit that, and on some GPUs (AMD Radeon 8060S) that crashed the game. The sensor view gets the
 	# same sky and tone mapping without them.
@@ -318,6 +344,40 @@ func _build_world() -> void:
 	eo_cam.environment = eo_env
 	eo_vp.add_child(eo_cam)
 	add_child(eo_vp)
+	_warm_pipelines(env)
+
+## Draw the effect materials once before the player can fire or ignite, so that first use does not compile a
+## shader in the middle of the fight. Same 4x MSAA, glow and ambient occlusion as the battle view.
+func _warm_pipelines(env: Environment) -> void:
+	var args := OS.get_cmdline_user_args()
+	if args.has("--shot") or args.has("--bench"): return
+	# Large enough for the glow mip chain (levels 2–4) and SSAO. A 16 px view cannot build those and, on some
+	# GPUs, used to crash. One frame here compiles the battle's materials before the first shot or burn.
+	var vp := SubViewport.new()
+	vp.name = "ShaderWarm"
+	vp.size = Vector2i(256, 256)
+	vp.msaa_3d = Viewport.MSAA_4X
+	vp.own_world_3d = true
+	vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	var we := WorldEnvironment.new()
+	we.environment = env
+	vp.add_child(we)
+	var light := DirectionalLight3D.new()
+	light.shadow_enabled = true
+	vp.add_child(light)
+	var warm_cam := Camera3D.new()
+	warm_cam.environment = env
+	vp.add_child(warm_cam)
+	# Dagger, Lance, Mars: whichever the player flies, the first frame of a fight is not a compile hitch.
+	for spec in [[false, 0], [false, 2], [true, 1]]:
+		var ship := ShipModel.new()
+		ship.build(spec[0], spec[1])
+		vp.add_child(ship)
+		ship.expose_for_warmup()
+	warm_cam.position = Vector3(0, 40, 220)
+	warm_cam.look_at(Vector3.ZERO)
+	add_child(vp)
+	_warm_vp = vp
 
 ## Equirectangular star field: a few thousand faint points, a handful bright, slightly warm or cool. Same every run.
 static func _star_panorama() -> ImageTexture:
@@ -352,6 +412,11 @@ func _spawn_models() -> void:
 	foe_model = ShipModel.new()
 	foe_model.build(true, int(foe["gun"]))
 	add_child(foe_model)
+	if eo_model: eo_model.queue_free()
+	eo_model = ShipModel.new()
+	eo_model.build(true, int(foe["gun"]))
+	eo_vp.add_child(eo_model)
+	_ex_ready = false
 
 # ------------------------------------------------------------------ battle flow
 
@@ -492,11 +557,22 @@ func _track_heat() -> void:
 func _snap() -> void:
 	var t: float = battle.get_time()
 	if t == snap_time and not snap_dirty and not S0.is_empty(): return
+	if _ex_ready and not S0.is_empty():
+		_ex_h[0] = float(S0["heading"])
+		_ex_h[1] = float(S1["heading"])
+		_ex_roll[0] = float(S0["roll"])
+		_ex_roll[1] = float(S1["roll"])
 	snap_time = t
 	snap_dirty = false
 	S0 = battle.get_ship(0)
 	S1 = battle.get_ship(1)
 	SHOTS = battle.get_shots()
+	if not _ex_ready:
+		_ex_h[0] = float(S0["heading"])
+		_ex_h[1] = float(S1["heading"])
+		_ex_roll[0] = float(S0["roll"])
+		_ex_roll[1] = float(S1["roll"])
+		_ex_ready = true
 
 func _process(delta: float) -> void:
 	var t0 := Time.get_ticks_usec() if bench_frames > 0 else 0
@@ -526,6 +602,11 @@ func _process(delta: float) -> void:
 			bench_sum[kv[0]] = bench_sum.get(kv[0], 0.0) + kv[1] / 1000.0
 	if bench_frames > 0:
 		_bench_step(delta, Time.get_ticks_usec() - t0)
+	if _warm_vp != null:
+		_warm_vp.queue_free()
+		_warm_vp = null
+	if fps_meter and fps_meter.visible != Settings.show_fps:
+		fps_meter.visible = Settings.show_fps
 	if shot_path != "":
 		shot_frames += 1
 		if shot_frames == 10:
@@ -562,22 +643,35 @@ func _sim_to_world(p: Vector2, origin: Vector2) -> Vector3:
 	var d := (p - origin) * 1000.0
 	return Vector3(d.x, 0, -d.y)
 
+func _ahead(ship: Dictionary, alpha: float) -> Vector2:
+	# pos is km, vel is m/s. alpha is the fraction of the 0.1 s tick still to come.
+	return (ship["pos"] as Vector2) + (ship["vel"] as Vector2) * (alpha * 0.1 / 1000.0)
+
+func _ahead_angle(cur: float, prev: float, alpha: float) -> float:
+	return cur + wrapf(cur - prev, -PI, PI) * alpha
+
 func _update_world(delta: float) -> void:
 	var own: Dictionary = S0
 	var foe: Dictionary = S1
-	var focus: Vector2 = foe["pos"] if view_target else own["pos"]
-	own_model.position = _sim_to_world(own["pos"], focus)
-	foe_model.position = _sim_to_world(foe["pos"], focus)
-	roll_angle = float(own["roll"])
-	foe_roll = float(foe["roll"])
-	own_model.rotation = Vector3(0, float(own["heading"]) - PI / 2, roll_angle)
-	foe_model.rotation = Vector3(0, float(foe["heading"]) - PI / 2, foe_roll)
+	# The sim moves in 0.1 s steps. Drawing only the last step makes the hull, the enemy and the rounds jump
+	# ten times a second however high the frame rate is. Extrapolate with the velocity the tick just set.
+	var alpha := float(battle.get_fraction()) if shot_path == "" else 0.0
+	var own_p := _ahead(own, alpha)
+	var foe_p := _ahead(foe, alpha)
+	var focus: Vector2 = foe_p if view_target else own_p
+	own_model.position = _sim_to_world(own_p, focus)
+	foe_model.position = _sim_to_world(foe_p, focus)
+	roll_angle = _ahead_angle(float(own["roll"]), _ex_roll[0], alpha)
+	foe_roll = _ahead_angle(float(foe["roll"]), _ex_roll[1], alpha)
+	hdg_angle = _ahead_angle(float(own["heading"]), _ex_h[0], alpha)
+	own_model.rotation = Vector3(0, hdg_angle - PI / 2, roll_angle)
+	foe_model.rotation = Vector3(0, _ahead_angle(float(foe["heading"]), _ex_h[1], alpha) - PI / 2, foe_roll)
 	own_model.view_mode = 1 if armor_view else 0
 	foe_model.view_mode = 1 if armor_view and view_target and battle.get_sensor_quality() > 0.5 else 0
 	own_model.show_state(own, delta)
 	foe_model.show_state(foe, delta)
-	own_model.aim(own["turret_aim"])
-	foe_model.aim(foe["turret_aim"])
+	own_model.aim(own["turret_aim"], delta if shot_path == "" else -1.0)
+	foe_model.aim(foe["turret_aim"], delta if shot_path == "" else -1.0)
 	own_model.beam_fx = laser_beams
 	foe_model.beam_fx = laser_beams
 	own_model.aim_sensor(foe_model.global_position)
@@ -617,7 +711,9 @@ func _update_world(delta: float) -> void:
 		m.spot_halo.visible = m.spot.visible
 	shot_vis.clear()
 	for s in SHOTS:
-		var p := _sim_to_world(s["pos"], focus)
+		var sp: Vector2 = s["pos"]
+		if s.has("vel"): sp += (s["vel"] as Vector2) * (alpha * 0.1 / 1000.0)
+		var p := _sim_to_world(sp, focus)
 		var dir := (foe_model.position - own_model.position).normalized() if int(s["shooter"]) == 0 else (own_model.position - foe_model.position).normalized()
 		var tc := Color(0.6, 0.85, 1.0) if int(s["shooter"]) == 0 else Color(1.0, 0.6, 0.25)
 		shot_vis.append([p, dir, tc])
@@ -626,16 +722,29 @@ func _update_world(delta: float) -> void:
 	# Size snapped to 4 px steps and set only on change: a new size reallocates the render target.
 	var res := int(clamp(12 + 180 * q * q, 12, 192)) / 4 * 4
 	if eo_vp.size.x != res: eo_vp.size = Vector2i(res, res)
-	eo_wait -= delta
-	if (eo_wait <= 0.0 and hud.visible) or shot_path != "":
-		eo_wait = 1.0 / EO_HZ
-		eo_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	var eo_mode := SubViewport.UPDATE_WHEN_VISIBLE if hud.visible or shot_path != "" else SubViewport.UPDATE_DISABLED
+	if tplot.visible: eo_mode = SubViewport.UPDATE_DISABLED
+	if eo_vp.render_target_update_mode != eo_mode: eo_vp.render_target_update_mode = eo_mode
+	if eo_mode == SubViewport.UPDATE_WHEN_VISIBLE and eo_model:
+		eo_model.position = foe_model.position
+		eo_model.rotation = foe_model.rotation
+		eo_model.view_mode = foe_model.view_mode
+		eo_model.beam_fx = laser_beams
+		eo_model.show_state(foe, delta)
+		eo_model.aim(foe["turret_aim"], delta if shot_path == "" else -1.0)
+		eo_model.show_emitters(foe_fire)
+		eo_model.update_spot(own_fire.count(true), int(own["target_sys"]), int(own["target_turret"]), own_model.position, dtb)
+		eo_model.aim_sensor(own_model.position)
 	var los := (foe_model.position - own_model.position).normalized()
 	var axis := -foe_model.global_transform.basis.z.normalized()
 	var across: float = foe_model.length * sqrt(max(0.0, 1.0 - pow(los.dot(axis), 2))) + foe_model.length * 0.25
 	var half: float = max(12.0, across * 0.65)
 	eo_cam.position = foe_model.position - los * (half / tan(deg_to_rad(2.0)))
 	eo_cam.look_at(foe_model.position, Vector3.UP)
+	if eo_mode == SubViewport.UPDATE_WHEN_VISIBLE and eo_model:
+		var eo_face := eo_model.spot_normal.dot((eo_cam.position - eo_model.spot_position()).normalized()) > -0.35
+		eo_model.spot.visible = eo_model.spot.visible and eo_face
+		eo_model.spot_halo.visible = eo_model.spot.visible
 
 func battle_speed() -> float:
 	return [0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0][battle.get_speed()]
@@ -679,9 +788,9 @@ func _add_tooltips() -> void:
 		"Burn toward the enemy (W). Main drive along the nose: strong, but it adds heat.",
 		"Roll right (E). Rolling turns fresh armour panels to the beam; press again to stop.",
 		"Match velocity with the enemy (X): burn until the range stops changing.",
-		"Sideways burn left (A) on the OMS pods: weak, but the nose stays on the enemy.",
+		"Sideways burn left (A) on the OMS pods: weak, but the nose stays on the enemy. During a closing burn it fires as well as the main drive, it does not replace it.",
 		"Burn away from the enemy (S) to open the range or brake.",
-		"Sideways burn right (D) on the OMS pods: weak, but the nose stays on the enemy.",
+		"Sideways burn right (D) on the OMS pods: weak, but the nose stays on the enemy. During a closing burn it fires as well as the main drive, it does not replace it.",
 		"Side-on / nose-on (T). Side-on brings every turret to bear but shows the enemy your long, thin side armour."]
 	for i in helm_btns.size(): tip.call(helm_btns[i], helm_tips[i])
 	tip.call(ignite, "Ignite / cut the drive (I) for the selected burn. Drive burns cost propellant (Δv) and heat.")
@@ -1106,6 +1215,7 @@ func _set_throttle(v: float) -> void:
 func _toggle_ignite() -> void:
 	if int(battle.get_ship(0)["burn"]) != 0:
 		battle.set_burn(0, throttle)
+		battle.set_oms_strafe(0)
 	else:
 		battle.set_burn(sel_burn, throttle)
 
@@ -1117,8 +1227,18 @@ func _helm(act) -> void:
 			"roll+": battle.set_roll(0 if int(me["roll_dir"]) == 1 else 1)
 			"side": battle.set_facing(0 if int(me["facing"]) == 1 else 1)
 	else:
+		var burning := int(battle.get_ship(0)["burn"])
+		# A closing burn is the main drive. Left and right are the pods: they stack on that burn instead of
+		# cutting it. Any other helm pick is a single order, as before, and clears a stacked strafe.
+		if (int(act) == 3 or int(act) == 4) and burning == 1:
+			var want := 1 if int(act) == 3 else -1
+			var cur := int(battle.get_ship(0)["oms_strafe"])
+			battle.set_oms_strafe(0 if cur == want else want)
+			hud_dirty = true
+			return
+		battle.set_oms_strafe(0)
 		sel_burn = int(act)
-		if int(battle.get_ship(0)["burn"]) != 0:
+		if burning != 0:
 			battle.set_burn(sel_burn, throttle)
 
 func _view(v: String) -> void:
@@ -1167,7 +1287,7 @@ func _update_hud(delta: float) -> void:
 	if lasing_or_popups(): alerts.queue_redraw()
 	var rel: Vector2 = Vector2(foe["pos"]) - Vector2(own["pos"])
 	var brg := rel.angle()
-	var off := rad_to_deg(wrapf(brg - float(own["heading"]), -PI, PI))
+	var off := rad_to_deg(wrapf(brg - hdg_angle, -PI, PI))
 	ball.set_att(roll_angle, off)
 	hud_wait -= delta
 	if hud_wait > 0.0 and not hud_dirty and shot_path == "": return
@@ -1301,9 +1421,12 @@ func _update_hud(delta: float) -> void:
 		elif a == -3: on = rolling == 1
 		elif a == -2: on = facing == 1
 		else: on = a == (burn if burn != 0 else sel_burn)
+		if burn == 1 and a == 3 and int(own["oms_strafe"]) == 1: on = true
+		if burn == 1 and a == 4 and int(own["oms_strafe"]) == -1: on = true
 		(helm_btns[i] as W.Btn).set_state(on)
 	var oms_on := (own["oms"] as Vector2).length() > 0.01
-	if own["burning"]: drive_txt.set_text("MAIN DRIVE · BURNING", W.PRI)
+	if own["burning"] and oms_on: drive_txt.set_text("MAIN DRIVE + OMS", W.PRI)
+	elif own["burning"]: drive_txt.set_text("MAIN DRIVE · BURNING", W.PRI)
 	elif oms_on: drive_txt.set_text("OMS PODS · FIRING", W.SEC)
 	else: drive_txt.set_text("MAIN DRIVE · IDLE", W.MUTED)
 	thr_txt.set_text("THR %d%%" % int(round(throttle * 100)))
@@ -1805,6 +1928,9 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_C: chase = not chase
 			KEY_B: fc_lines = not fc_lines
 			KEY_L: laser_beams = not laser_beams
+			KEY_F4:
+				Settings.set_show_fps(not Settings.show_fps)
+				if fps_meter: fps_meter.visible = Settings.show_fps
 			KEY_V: _toggle_plot()
 			KEY_Q: _helm("roll-")
 			KEY_E: _helm("roll+")
@@ -2004,8 +2130,18 @@ func _bench_step(delta: float, script_us: int) -> void:
 		"primitives": Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
 	}
 	for k in m: bench_sum[k] = bench_sum.get(k, 0.0) + m[k]
+	bench_times.append(m["frame_ms"])
 	if bench_n == 60 + bench_frames:
 		var out := "BENCH"
 		for k in bench_sum: out += "  %s=%.3f" % [k, bench_sum[k] / bench_frames]
+		bench_times.sort()
+		var n := bench_times.size()
+		var mean: float = float(bench_sum["frame_ms"]) / float(n)
+		var varsum := 0.0
+		for t in bench_times: varsum += (t - mean) * (t - mean)
+		var sd := sqrt(varsum / n)
+		var p95 := bench_times[mini(n - 1, int(n * 0.95))]
+		var p99 := bench_times[mini(n - 1, int(n * 0.99))]
+		out += "  frame_sd=%.3f  frame_min=%.3f  frame_p95=%.3f  frame_p99=%.3f  frame_max=%.3f" % [sd, bench_times[0], p95, p99, bench_times[n - 1]]
 		print(out)
 		get_tree().quit()

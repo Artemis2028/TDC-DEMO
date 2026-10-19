@@ -28,6 +28,7 @@ void DemoBattle::advance(double s) { b_->advance(s); }
 void DemoBattle::set_speed(int64_t i) { b_->set_speed(static_cast<int>(i)); }
 int64_t DemoBattle::get_speed() const { return b_->speed_index(); }
 double DemoBattle::get_time() const { return b_->time(); }
+double DemoBattle::get_fraction() const { return b_->fraction(); }
 String DemoBattle::get_drop_reason() const { return String::utf8(b_->drop_reason().c_str()); }
 int64_t DemoBattle::get_winner() const { return b_->winner(); }
 bool DemoBattle::get_cruise_allowed() const { return b_->cruise_allowed(); }
@@ -44,6 +45,7 @@ void DemoBattle::set_mark(int64_t sys, int64_t turret, int64_t mark) {
     b_->set_mark(0, static_cast<tdc::Sys>(sys), static_cast<int>(turret), static_cast<tdc::Mark>(mark));
 }
 void DemoBattle::set_burn(int64_t burn, double th) { b_->set_burn(0, static_cast<tdc::Burn>(burn), th); }
+void DemoBattle::set_oms_strafe(int64_t dir) { b_->set_oms_strafe(0, static_cast<int>(dir)); }
 void DemoBattle::set_radiators(bool e) { b_->set_radiators(0, e); }
 bool DemoBattle::order_repair(int64_t s) { return b_->order_repair(0, static_cast<tdc::Sys>(s)); }
 void DemoBattle::set_auto_repair(bool on) { b_->set_auto_repair(0, on); }
@@ -99,6 +101,7 @@ Dictionary DemoBattle::get_ship(int64_t i) const {
     d[KEY("roll")] = s.roll; d[KEY("roll_dir")] = s.roll_dir;
     d[KEY("burning")] = s.main_firing;
     d[KEY("oms")] = Vector2(static_cast<real_t>(s.oms_fwd), static_cast<real_t>(s.oms_left));
+    d[KEY("oms_strafe")] = s.oms_strafe;
     d[KEY("target_turret")] = s.target_turret;
     d[KEY("out")] = s.out; d[KEY("out_reason")] = String::utf8(s.out_reason.c_str());
     d[KEY("weapons_free")] = s.weapons_free; d[KEY("laser_armed")] = s.laser_armed(); d[KEY("gun_armed")] = s.gun_armed;
@@ -136,6 +139,7 @@ Array DemoBattle::get_shots() const {
     for (const auto& s : b_->shots()) {
         Dictionary d;
         d[KEY("pos")] = Vector2(static_cast<real_t>(s.pos.x / 1000), static_cast<real_t>(s.pos.y / 1000));
+        d[KEY("vel")] = Vector2(static_cast<real_t>(s.vel.x), static_cast<real_t>(s.vel.y));
         d[KEY("kind")] = static_cast<int>(s.kind);
         d[KEY("shooter")] = s.shooter;
         a.push_back(d);
@@ -151,6 +155,7 @@ void DemoBattle::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_speed", "index"), &DemoBattle::set_speed);
     ClassDB::bind_method(D_METHOD("get_speed"), &DemoBattle::get_speed);
     ClassDB::bind_method(D_METHOD("get_time"), &DemoBattle::get_time);
+    ClassDB::bind_method(D_METHOD("get_fraction"), &DemoBattle::get_fraction);
     ClassDB::bind_method(D_METHOD("get_drop_reason"), &DemoBattle::get_drop_reason);
     ClassDB::bind_method(D_METHOD("get_winner"), &DemoBattle::get_winner);
     ClassDB::bind_method(D_METHOD("get_cruise_allowed"), &DemoBattle::get_cruise_allowed);
@@ -163,6 +168,7 @@ void DemoBattle::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_roll", "dir"), &DemoBattle::set_roll);
     ClassDB::bind_method(D_METHOD("set_mark", "sys", "turret", "mark"), &DemoBattle::set_mark);
     ClassDB::bind_method(D_METHOD("set_burn", "burn", "throttle"), &DemoBattle::set_burn);
+    ClassDB::bind_method(D_METHOD("set_oms_strafe", "dir"), &DemoBattle::set_oms_strafe);
     ClassDB::bind_method(D_METHOD("set_radiators", "extended"), &DemoBattle::set_radiators);
     ClassDB::bind_method(D_METHOD("order_repair", "sys"), &DemoBattle::order_repair);
     ClassDB::bind_method(D_METHOD("set_auto_repair", "on"), &DemoBattle::set_auto_repair);

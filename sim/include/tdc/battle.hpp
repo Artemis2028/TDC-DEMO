@@ -156,6 +156,7 @@ struct Ship {
     bool holding_heat = false;    // AI heat discipline: laser held between 90 and 60
     bool main_firing = false;     // main drive lit this tick
     double oms_fwd = 0, oms_left = 0;   // OMS thrust this tick in ship axes (forward, left), 0 when idle
+    int oms_strafe = 0;           // player order while the main drive is lit: +1 left, -1 right, 0 none. AI leaves this at 0.
     int target_turret = -1;       // with target_sys Laser: which enemy turret to aim at (-1: whichever is exposed)
     // What this ship's crew believes about its enemy: health estimates from the EO track (refreshed every few seconds,
     // rounded to 10, sometimes well off) and the crew's own marks.
@@ -217,6 +218,8 @@ public:
     void advance(double real_seconds);  // runs whole ticks at the current speed
     void step();                        // one tick
     double time() const { return time_; }
+    /// 0 just after a tick, rising toward 1 as the next tick comes due. The view extrapolates across it.
+    double fraction() const { return carry_ < 0 ? 0 : (carry_ > kDt ? 1 : carry_ / kDt); }
     int speed_index() const { return speed_; }
     void set_speed(int index);
     bool cruise_allowed() const;        // false while any enemy is inside weapon range
@@ -232,6 +235,7 @@ public:
     void set_facing(int ship, Facing f);
     void set_roll(int ship, int dir);                       // roll about the ship's axis: -1, 0 (stop) or +1; keeps the facing
     void set_burn(int ship, Burn b, double throttle);
+    void set_oms_strafe(int ship, int dir);   // lateral OMS while a nose burn is on the main drive: -1, 0, +1
     void set_radiators(int ship, bool extended);
     bool order_repair(int ship, Sys s);   // false if no team is free or nothing to repair
     void set_auto_repair(int ship, bool on);

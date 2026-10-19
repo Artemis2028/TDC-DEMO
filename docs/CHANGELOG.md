@@ -3,6 +3,15 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.13.1
+- The battle is drawn between the 10 Hz sim steps, so the hull, the enemy and rounds in flight no longer jump ten times a second when the frame rate is higher than the sim. Turret aim eases the same way. The attitude ball uses that in-between heading and roll.
+- The sensor picture updates every frame. It is a second, unshadowed copy of the enemy, so the feed is not a second set of shadow cascades hitching the main view. Text on the panels stays at 15 Hz.
+- A frame cap below the monitor's refresh turns vsync off. At or above the refresh, vsync stays on and the cap does not fight it. The first battle compiles the ship and effect shaders in a throwaway view, so the first shot or burn is not a compile hitch.
+- Settings has a frame-time counter, off by default. F4 switches it during a battle. It shows FPS, frame time in ms, a 1% low and a short graph.
+- The Lance's coil charge, muzzle flash and drive plume no longer bloom across the frame. Their lights are smaller and dimmer, and the imported emissive strengths (the throat was ×45, the strobes ×80) are capped. The ship and the HUD stay readable while the drive is burning.
+- OMS pods can fire during a main-drive burn. A and D during a closing burn add a strafe instead of cutting the drive. There was no physical ban; one order used to be either the drive or the pods. A pure sideways or braking burn is still pods only. The AI and the recorded battles are unchanged (idle still about 42 %, holding the range about 72 %).
+- The Lance's paints are the colours written in the material names (the file had left those factors white). Curved housings share normals across faces that meet more gently than 50°, and Godot no longer builds mesh LODs for this hull, which had been eating thin rings. The low-poly silhouette is the source mesh. The Dagger and the Mars frigate are unchanged.
+
 ## v0.13.0
 - The Lance (laser and spinal coilgun) is drawn with the Arbiter TDC v8 hull. The Dagger keeps the previous Earth
   model, and the Mars frigate is unchanged. The v8 clips for the radiator wings, the main drive, the coilgun

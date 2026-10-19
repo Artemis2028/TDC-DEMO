@@ -280,6 +280,223 @@ def material_fp(gltf, mi):
     )
 
 
+def _srgb_hex(text):
+    """Last 6-digit hex in a material name, as linear RGB. Artists put the paint in the name
+    and left baseColorFactor at the glTF default, so Godot drew those surfaces white."""
+    import re
+    hits = re.findall(r"(?<![0-9A-Fa-f])([0-9A-Fa-f]{6})(?![0-9A-Fa-f])", text)
+    if not hits:
+        return None
+    h = hits[-1]
+    out = []
+    for i in range(3):
+        c = int(h[i * 2:i * 2 + 2], 16) / 255.0
+        if c <= 0.04045:
+            out.append(c / 12.92)
+        else:
+            out.append(((c + 0.055) / 1.055) ** 2.4)
+    return out
+
+
+# Paints whose names carry no hex. Values are sRGB hex, converted on use.
+_NAMED_PAINT = {
+    "MAT_Gunmetal": "5A616C",
+    "MAT_DriveRing_BrightMetal": "C6C9CF",
+    "MAT_Recess_Dark": "14161A",
+    "MAT_RadarDome_LightGrey": "C4C7CB",
+    "MAT_Cable_Black": "161616",
+    "MAT_DarkComposite_ESM": "2C3034",
+    "MAT_HazardStripes_Face": "C9962A",
+    "MAT_HazardTape_XY": "C9962A",
+    "MAT_HazardTape_XZ": "C9962A",
+    "MAT_HazardEdge_Cyl": "1A1C1E",
+    "MAT_NavLight_Red": "8A1A16",
+    "MAT_NavLight_Green": "1A6A28",
+    "MAT_Strobe_White": "E6E8EA",
+}
+
+
+def paint_named_colors(gltf):
+    """Give untextured materials the colour written in their name. A factor that is already
+    set (and not the default white) is the artist's, so it stays."""
+    painted = 0
+    for m in gltf["materials"]:
+        p = m.setdefault("pbrMetallicRoughness", {})
+        if "baseColorTexture" in p:
+            continue
+        bc = p.get("baseColorFactor")
+        if bc is not None and not all(abs(float(bc[i]) - 1.0) < 1e-4 for i in range(3)):
+            continue
+        name = m.get("name", "")
+        rgb = _srgb_hex(name)
+        if rgb is None:
+            base = name.split(".")[0]
+            if base in _NAMED_PAINT:
+                rgb = _srgb_hex(_NAMED_PAINT[base])
+        if rgb is None and name.startswith("PDL"):
+            rgb = _srgb_hex("1A1020")
+        if rgb is None:
+            continue
+        alpha = float(bc[3]) if bc is not None and len(bc) > 3 else 1.0
+        p["baseColorFactor"] = [rgb[0], rgb[1], rgb[2], alpha]
+        painted += 1
+    return painted
+
+
+# Authored KHR_materials_emissive_strength runs from 5 (plume) to 150 (projectile). Godot
+# multiplies emission by it, and the glow threshold is 1.6, so the throat (×45) and the
+# plume core wash the frame out. Cap the multiplier; the colour stays the artist's.
+_EMISSIVE_CAP = {
+    "MAT_FX_CoilGlow": 1.35,
+    "MAT_FX_MuzzleFlare": 1.6,
+    "MAT_FX_MuzzleFlash": 2.0,
+    "MAT_FX_Projectile": 1.5,
+    "MAT_FX_TracerTail": 1.5,
+    "MAT_FX_TracerHot": 1.5,
+    "MAT_FX_DrivePlume": 1.15,
+    "MAT_FX_DriveCore": 1.45,
+    "MAT_DriveThroat_Emissive_BFD8FF": 1.35,
+    "MAT_NavLight_Red": 1.8,
+    "MAT_NavLight_Green": 1.8,
+    "MAT_Strobe_White": 1.8,
+    "MAT_FX_LaserBeam": 1.8,
+    "MAT_FX_LaserGlow": 1.4,
+    "MAT_ArmedRing_Teal_7FD1C7.001": 1.8,
+}
+
+
+def cap_emissive_strength(gltf):
+    capped = 0
+    for m in gltf["materials"]:
+        ext = m.get("extensions") or {}
+        kh = ext.get("KHR_materials_emissive_strength")
+        if not kh:
+            continue
+        strength = float(kh.get("emissiveStrength", 1.0))
+        name = m.get("name", "")
+        limit = _EMISSIVE_CAP.get(name)
+        if limit is None and strength > 2.0:
+            limit = 1.8
+        if limit is None or strength <= limit:
+            continue
+        kh["emissiveStrength"] = limit
+        capped += 1
+    return capped
+
+
+def _write_normals(gltf, blob, acc_i, normals):
+    acc = gltf["accessors"][acc_i]
+    bv = gltf["bufferViews"][acc["bufferView"]]
+    stride = bv.get("byteStride", 12)
+    start = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+    mn = [1e9, 1e9, 1e9]
+    mx = [-1e9, -1e9, -1e9]
+    for i, v in enumerate(normals):
+        struct.pack_into("<fff", blob, start + i * stride, v[0], v[1], v[2])
+        for k in range(3):
+            if v[k] < mn[k]:
+                mn[k] = v[k]
+            if v[k] > mx[k]:
+                mx[k] = v[k]
+    acc["min"] = mn
+    acc["max"] = mx
+
+
+def smooth_curved_normals(gltf, blob, crease_deg=50.0):
+    """The export split a normal per face, so cylinders and housings shade as flat facets.
+    Average corners that share a position when the faces meet more gently than crease_deg.
+    Hard panel edges stay split. Effect meshes are left alone."""
+    import math
+    cos_lim = math.cos(math.radians(crease_deg))
+    fx_bits = ("MAT_FX_", "Plume", "Muzzle", "Projectile", "Tracer", "OMSGas", "LaserBeam", "LaserGlow")
+    smoothed = 0
+    for mesh in gltf["meshes"]:
+        prims = mesh["primitives"]
+        names = []
+        skip = False
+        for p in prims:
+            mi = p.get("material")
+            if mi is None:
+                continue
+            nm = gltf["materials"][mi].get("name", "")
+            names.append(nm)
+            if any(b in nm for b in fx_bits):
+                skip = True
+        if skip or not prims:
+            continue
+        loaded = []
+        ok = True
+        for p in prims:
+            attrs = p.get("attributes", {})
+            if "POSITION" not in attrs or "NORMAL" not in attrs:
+                ok = False
+                break
+            pos = read_acc(gltf, blob, attrs["POSITION"])
+            if "indices" in p:
+                idx = list(read_acc(gltf, blob, p["indices"]))
+            else:
+                idx = list(range(len(pos)))
+            loaded.append((p, pos, idx))
+        if not ok:
+            continue
+        groups = {}
+        face_of = []  # per prim: list of (i0,i1,i2,fn) aligned so corners can look up
+        for pi, (p, pos, idx) in enumerate(loaded):
+            faces = []
+            for f in range(0, len(idx) - 2, 3):
+                i0, i1, i2 = int(idx[f]), int(idx[f + 1]), int(idx[f + 2])
+                a, b, c = pos[i0], pos[i1], pos[i2]
+                e1 = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+                e2 = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+                fn = (
+                    e1[1] * e2[2] - e1[2] * e2[1],
+                    e1[2] * e2[0] - e1[0] * e2[2],
+                    e1[0] * e2[1] - e1[1] * e2[0],
+                )
+                ln = math.sqrt(fn[0] * fn[0] + fn[1] * fn[1] + fn[2] * fn[2])
+                fn = (fn[0] / ln, fn[1] / ln, fn[2] / ln) if ln > 1e-12 else (0.0, 1.0, 0.0)
+                faces.append(fn)
+                for corner in (i0, i1, i2):
+                    q = pos[corner]
+                    key = (round(q[0], 4), round(q[1], 4), round(q[2], 4))
+                    groups.setdefault(key, []).append((pi, corner, fn))
+            face_of.append(faces)
+        out = [[None] * len(pos) for (_, pos, _) in loaded]
+        for items in groups.values():
+            # One normal per corner index. Reference is the mean of the faces that already share it.
+            by_corner = {}
+            for pi, corner, fn in items:
+                by_corner.setdefault((pi, corner), []).append(fn)
+            for (pi, corner), fns in by_corner.items():
+                ref = [0.0, 0.0, 0.0]
+                for fn in fns:
+                    ref[0] += fn[0]
+                    ref[1] += fn[1]
+                    ref[2] += fn[2]
+                ln = math.sqrt(ref[0] * ref[0] + ref[1] * ref[1] + ref[2] * ref[2])
+                if ln < 1e-8:
+                    continue
+                ref = (ref[0] / ln, ref[1] / ln, ref[2] / ln)
+                accn = [0.0, 0.0, 0.0]
+                for _pi, _c, fn in items:
+                    d = ref[0] * fn[0] + ref[1] * fn[1] + ref[2] * fn[2]
+                    if d >= cos_lim:
+                        accn[0] += fn[0]
+                        accn[1] += fn[1]
+                        accn[2] += fn[2]
+                ln = math.sqrt(accn[0] * accn[0] + accn[1] * accn[1] + accn[2] * accn[2])
+                out[pi][corner] = (accn[0] / ln, accn[1] / ln, accn[2] / ln) if ln > 1e-8 else ref
+        for (p, pos, _idx), normals in zip(loaded, out):
+            # Corners a degenerate face never touched keep the authored normal.
+            authored = read_acc(gltf, blob, p["attributes"]["NORMAL"])
+            packed = []
+            for i, n in enumerate(normals):
+                packed.append(n if n is not None else authored[i])
+            _write_normals(gltf, blob, p["attributes"]["NORMAL"], packed)
+        smoothed += 1
+    return smoothed
+
+
 def canonical_materials(gltf):
     """First material index for each visual fingerprint."""
     first = {}
@@ -528,6 +745,8 @@ def compact_buffers(gltf, blob):
 
 def main(src, dst):
     gltf, blob = load_glb(src)
+    painted = paint_named_colors(gltf)
+    capped = cap_emissive_strength(gltf)
     nodes = gltf["nodes"]
     anim = set()
     for a in gltf["animations"]:
@@ -558,6 +777,7 @@ def main(src, dst):
     canon = canonical_materials(gltf)
     before, after = merge_mesh_prims(gltf, blob, live, canon)
     dropped = merge_fittings(gltf, blob, root)
+    smoothed = smooth_curved_normals(gltf, blob)
     gone = prune_unreachable(gltf)
     blob = compact_buffers(gltf, blob)
     save_glb(dst, gltf, blob)
@@ -577,6 +797,7 @@ def main(src, dst):
             nm = gltf["nodes"][ch["target"]["node"]].get("name")
             if nm not in names:
                 missing.append((a["name"], nm))
+    print("painted %d materials; capped %d emissive strengths; smoothed %d meshes" % (painted, capped, smoothed))
     print("replaced %d static root meshes; section triangles %d" % (replaced, tris_out))
     print("primitives %d -> %d on live meshes; fittings absorbed %d nodes; pruned %d" % (before, after, dropped, gone))
     print("scene primitives", prims, "triangles", tris)
