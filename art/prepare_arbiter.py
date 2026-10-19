@@ -13,13 +13,17 @@ Cuts match the Dagger's section fractions on this hull: the armoured nose
 Run:  python art/prepare_arbiter.py [src.glb] [dst.glb]
 
 A denser hull drops in as the source glb. Keep the node names the game looks up
-(turret yaw/pitch, sensor yaw/pitch, coil glows, radiator geos, OMS plumes, the
-drive plume) and the 13 animation names below. Do not rename them and do not
-subdivide here: the silhouette comes from the file. This script paints named
-colours, caps emissive strength, smooths normals across gentle edges, and
-refuses to write a file that dropped an animation or a required node. Godot
-imports with mesh LODs off (game/models/arbiter.glb.import); it also inserts a
-rest track for every animated node into every clip, which the game strips.
+(turret yaw/pitch, sensor yaw/pitch, coil glows, radiator geos, the OMS plume
+nodes including OMS_A010_Fore_Bottom_Plume_Radial, the drive plume) and the 13
+animation names below. Do not rename them and do not subdivide here: the
+silhouette comes from the file. A base colour the file already set (anything
+other than default white) is left alone; materials still at the glTF default
+are filled from the colour in the name, which is what this v8 file needs.
+Emissive strength is capped and face-flat meshes are smoothed across gentle
+edges. The script refuses to write a file that dropped an animation or a
+required node. Godot imports with mesh LODs off
+(game/models/arbiter.glb.import); it also inserts a rest track for every
+animated node into every clip, which the game strips.
 """
 import json
 import os
@@ -768,12 +772,23 @@ REQUIRED_NODES = (
     "Coilgun_A093_Barrel_Recoil", "Coilgun_MuzzleFlash", "Coilgun_MuzzleFlare",
     "Coilgun_Projectile", "MainDrive_A001-A004_Plume", "Target_Track_Point",
 )
+# The game scales these itself. OMSBurn is not played. A010's radial is part of
+# that set: a drop-in that omits it would hide the fore-bottom bell with no error.
+OMS_PLUME_NODES = tuple(
+    "%s_Plume_%s" % (station, kind)
+    for station in (
+        "OMS_A006_Aft_Bottom", "OMS_A007_Aft_Port", "OMS_A008_Aft_Stbd", "OMS_A009_Aft_Top",
+        "OMS_A010_Fore_Bottom", "OMS_A011_Fore_Port", "OMS_A012_Fore_Stbd", "OMS_A013_Fore_Top",
+    )
+    for kind in ("Radial", "TangentA", "TangentB")
+)
 
 
 def check_contract(gltf):
     names = {n.get("name") for n in gltf["nodes"]}
     anims = {a.get("name") for a in gltf.get("animations", [])}
     missing_n = [n for n in REQUIRED_NODES if n not in names]
+    missing_n += [n for n in OMS_PLUME_NODES if n not in names]
     missing_a = [a for a in REQUIRED_ANIMS if a not in anims]
     coils = [n for n in names if n and n.startswith("Coilgun_Coil_") and n.endswith("_Glow")]
     rads = [n for n in names if n and n.startswith("Radiator_") and n.endswith("_Geo")]

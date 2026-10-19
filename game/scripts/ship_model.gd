@@ -836,7 +836,8 @@ func _build_arbiter_markers(root: Node3D) -> void:
 		_drive_node.visible = false
 
 ## The model's own bells. Radial and tangent plumes point across the hull; fore and aft stations stand in for a
-## burn along the ship, the same stations the Dagger lights.
+## burn along the ship, the same stations the Dagger lights. OMSBurn is not played: each bell is authored at
+## scale ~0 (A010's radial included) and scaled to 1 here when that pod's station is firing.
 func _build_arbiter_oms(root: Node3D) -> void:
 	var clusters := [
 		["OMS_A010_Fore_Bottom", "F"], ["OMS_A011_Fore_Port", "F"], ["OMS_A012_Fore_Stbd", "F"], ["OMS_A013_Fore_Top", "F"],
