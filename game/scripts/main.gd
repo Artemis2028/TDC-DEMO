@@ -235,6 +235,9 @@ func _ready() -> void:
 				_snap()
 				_drain_events()
 		battle.set_speed(0)
+		# _start snapped the ships before these orders. A paused still never moves the clock, so without
+		# this the first frame would still show the pre-order radiators, burn and strafe.
+		snap_dirty = true
 		_drain_events()
 	else:
 		_show_menu()

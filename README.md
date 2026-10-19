@@ -53,7 +53,7 @@ at least 20 points ahead of it. Up to v0.11.1 the balance was tuned AI against A
 Earth flies two hulls. The lasers-only Dagger is Rafael's concept model (`art/source/Dagger_Earth_Destroyer.blend`),
 converted for the game by `art/import_dagger.py` (turns it to game axes, makes the radiator wings foldable, adds the
 three laser barbettes, OMS blisters and coilgun, joins parts by material) and exported to `game/models/earth.glb`.
-The Lance, the Earth ship that carries the spinal coilgun, is the Arbiter TDC v8 hull (`art/source/arbiter-TDC_v8.glb`).
+The Lance, the Earth ship that carries the spinal coilgun, is the Arbiter TDC v11 hull (`art/source/arbiter-TDC_v11.glb`).
 `art/prepare_arbiter.py` splits its static meshes into nose, body and aft for the armour view and writes
 `game/models/arbiter.glb`; the 13 animation clips are left on their original nodes. The Mars ship is built in Blender
 by `art/build_ships.py` (pure script, no hand modelling) and exported to `game/models/mars.glb`; `art/earth.blend` and

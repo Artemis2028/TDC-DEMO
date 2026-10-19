@@ -3,6 +3,11 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.14.0
+- The Lance is the Arbiter TDC v11 hull (`art/source/arbiter-TDC_v11.glb`, 40,927,736 bytes, SHA-256 `95cefa5402e785ae63ea9d458860a7d016ec62141048c5cd4d1f7189a78a0cd5`). The v8 source is gone. The 277 nodes, the 13 animation names and the 174 channels are unchanged, so the coilgun wave, the radiator seek, the aim snap and the clip-track strip from v0.13.2 still drive it. The Dagger and the Mars frigate are unchanged.
+- The laser aperture sits inside the gold and blue lip ring, and the turret ball is part of `Turret_01_Pitch`, `Turret_02_Pitch` and `Turret_03_Pitch`, which are the nodes the aim code already turns. Base colours are the file's. Meshes that already have weighted normals are not re-smoothed. Mesh LODs stay off, and the turret and sensor shells stay double-sided.
+- The fore-bottom OMS bell (A010) is shown when that pod fires. Its radial plume is authored at scale 0 and scaled up with the other bells. OMSBurn is still not the clip that runs.
+
 ## v0.13.2
 - The coilgun wave and the barrel recoil play again. The charge seek had left the gun player at speed 0, so the firing clip never advanced. The coils are bright enough to bloom, and the bloom stays on the coil: the muzzle light is still the small one.
 - Radiators fold and deploy with the panel, including while the drive is burning. Godot's importer had put a rest key for every animated part into every clip, so the drive clip was holding the wings open. Each clip now moves only its own nodes.

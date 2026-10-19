@@ -1,4 +1,4 @@
-"""Turn the authored Arbiter TDC v8 glTF into the Lance's runtime model.
+"""Turn the authored Arbiter glTF into the Lance's runtime model.
 
 The file is already in game axes (nose -Z, +Y up, +X starboard) and carries the
 13 animations. Static root meshes are split into nose / body / aft so the armour
@@ -17,11 +17,12 @@ A denser hull drops in as the source glb. Keep the node names the game looks up
 nodes including OMS_A010_Fore_Bottom_Plume_Radial, the drive plume) and the 13
 animation names below. Do not rename them and do not subdivide here: the
 silhouette comes from the file. A base colour the file already set (anything
-other than default white) is left alone; materials still at the glTF default
-are filled from the colour in the name, which is what this v8 file needs.
-Emissive strength is capped and face-flat meshes are smoothed across gentle
-edges. The script refuses to write a file that dropped an animation or a
-required node. Godot imports with mesh LODs off
+other than default white) is left alone; only a material still at the glTF
+default is filled from the colour in its name. Emissive strength is capped.
+Meshes whose normals already leave the face (weighted normals) are left as
+authored; face-flat meshes are still smoothed across gentle edges. The script
+refuses to write a file that dropped an animation or a required node. Godot
+imports with mesh LODs off
 (game/models/arbiter.glb.import); it also inserts a rest track for every
 animated node into every clip, which the game strips.
 """
@@ -31,7 +32,7 @@ import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC_DEFAULT = os.path.join(HERE, "source", "arbiter-TDC_v8.glb")
+SRC_DEFAULT = os.path.join(HERE, "source", "arbiter-TDC_v11.glb")
 DST_DEFAULT = os.path.join(HERE, "..", "game", "models", "arbiter.glb")
 
 # World Z of the section planes (authored metres, nose at -Z).
@@ -415,14 +416,48 @@ def _write_normals(gltf, blob, acc_i, normals):
     acc["max"] = mx
 
 
+def _authored_is_weighted(gltf, blob, loaded):
+    """True when normals already tilt off their faces. A crease average would replace that
+    weighting. A face-flat export matches the face on essentially every corner."""
+    import math
+    off = 0
+    total = 0
+    for p, pos, idx in loaded:
+        nrm = read_acc(gltf, blob, p["attributes"]["NORMAL"])
+        for f in range(0, len(idx) - 2, 3):
+            i0, i1, i2 = int(idx[f]), int(idx[f + 1]), int(idx[f + 2])
+            a, b, c = pos[i0], pos[i1], pos[i2]
+            e1 = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+            e2 = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+            fn = (
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            )
+            ln = math.sqrt(fn[0] * fn[0] + fn[1] * fn[1] + fn[2] * fn[2])
+            if ln < 1e-12:
+                continue
+            fn = (fn[0] / ln, fn[1] / ln, fn[2] / ln)
+            for corner in (i0, i1, i2):
+                nv = nrm[corner]
+                ln2 = math.sqrt(nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2]) or 1.0
+                d = (nv[0] * fn[0] + nv[1] * fn[1] + nv[2] * fn[2]) / ln2
+                total += 1
+                if d < 0.995:
+                    off += 1
+    return total > 0 and off / total > 0.04
+
+
 def smooth_curved_normals(gltf, blob, crease_deg=50.0):
-    """The export split a normal per face, so cylinders and housings shade as flat facets.
-    Average corners that share a position when the faces meet more gently than crease_deg.
-    Hard panel edges stay split. Effect meshes are left alone."""
+    """Face-flat meshes shade cylinders as facets. Average corners that share a position
+    when the faces meet more gently than crease_deg. A mesh whose normals already leave
+    the face is left as authored. Hard panel edges stay split. Effect meshes are left
+    alone. Returns (smoothed, kept)."""
     import math
     cos_lim = math.cos(math.radians(crease_deg))
     fx_bits = ("MAT_FX_", "Plume", "Muzzle", "Projectile", "Tracer", "OMSGas", "LaserBeam", "LaserGlow")
     smoothed = 0
+    kept = 0
     for mesh in gltf["meshes"]:
         prims = mesh["primitives"]
         names = []
@@ -451,6 +486,9 @@ def smooth_curved_normals(gltf, blob, crease_deg=50.0):
                 idx = list(range(len(pos)))
             loaded.append((p, pos, idx))
         if not ok:
+            continue
+        if _authored_is_weighted(gltf, blob, loaded):
+            kept += 1
             continue
         groups = {}
         face_of = []  # per prim: list of (i0,i1,i2,fn) aligned so corners can look up
@@ -507,7 +545,7 @@ def smooth_curved_normals(gltf, blob, crease_deg=50.0):
                 packed.append(n if n is not None else authored[i])
             _write_normals(gltf, blob, p["attributes"]["NORMAL"], packed)
         smoothed += 1
-    return smoothed
+    return smoothed, kept
 
 
 def canonical_materials(gltf):
@@ -841,7 +879,7 @@ def main(src, dst):
     canon = canonical_materials(gltf)
     before, after = merge_mesh_prims(gltf, blob, live, canon)
     dropped = merge_fittings(gltf, blob, root)
-    smoothed = smooth_curved_normals(gltf, blob)
+    smoothed, kept_normals = smooth_curved_normals(gltf, blob)
     gone = prune_unreachable(gltf)
     blob = compact_buffers(gltf, blob)
     save_glb(dst, gltf, blob)
@@ -861,7 +899,7 @@ def main(src, dst):
             nm = gltf["nodes"][ch["target"]["node"]].get("name")
             if nm not in names:
                 missing.append((a["name"], nm))
-    print("painted %d materials; capped %d emissive strengths; smoothed %d meshes" % (painted, capped, smoothed))
+    print("painted %d materials still at default white; capped %d emissive strengths; smoothed %d flat meshes, left %d with weighted normals" % (painted, capped, smoothed, kept_normals))
     print("replaced %d static root meshes; section triangles %d" % (replaced, tris_out))
     print("primitives %d -> %d on live meshes; fittings absorbed %d nodes; pruned %d" % (before, after, dropped, gone))
     print("scene primitives", prims, "triangles", tris)

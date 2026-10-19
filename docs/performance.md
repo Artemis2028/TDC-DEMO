@@ -88,3 +88,14 @@ What that mean cannot show, and what was making a smooth frame rate feel choppy:
 - Panel text stays at 15 Hz. The attitude ball, the overlay and the alerts were already every frame; the ball now follows the in-between heading.
 
 Radiator segments stay separate meshes. There are 24 of them, each a different shape, each keyed by RadiatorDeploy, so one MultiMesh would freeze the deploy. The missile-cell lids are few draws and already cast no shadow. The four cascades stay: with two, the radiator wings leak light at close range.
+
+## Arbiter TDC v11 (v0.14.0)
+
+Same live bench as the table above (`--bench 40 --class 1 --speed 2`), on this machine, before and after the v11 hull. Both runs are llvmpipe, so the frame time is a CPU-renderer number, not the Windows GPU.
+
+| | Frame | Script | Draws | Triangles | Frame sd | Min | p95 | p99 | Max |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| v0.13.2 (v8 hull) | 133.2 ms | 0.87 ms | 1192 | 657 k | 7.3 ms | 119 ms | 145 ms | 147 ms | 147 ms |
+| v0.14.0 (v11 hull) | 133.3 ms | 0.88 ms | 1193 | 1,114 k | 6.5 ms | 119 ms | 144 ms | 148 ms | 148 ms |
+
+Draws stay at 1,193. The triangle count is the authored mesh: 399,185 triangles in the file, and about 1.11 million primitives once the depth and shadow passes are counted. The mean frame did not move. Vertex work is still not what this renderer is waiting on.
