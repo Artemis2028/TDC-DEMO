@@ -99,3 +99,14 @@ Same live bench as the table above (`--bench 40 --class 1 --speed 2`), on this m
 | v0.14.0 (v11 hull) | 133.3 ms | 0.88 ms | 1193 | 1,114 k | 6.5 ms | 119 ms | 144 ms | 148 ms | 148 ms |
 
 Draws stay at 1,193. The triangle count is the authored mesh: 399,185 triangles in the file, and about 1.11 million primitives once the depth and shadow passes are counted. The mean frame did not move. Vertex work is still not what this renderer is waiting on.
+
+## Arbiter TDC v17 (v0.15.0)
+
+Same live bench (`--bench 40 --class 1 --speed 2`), on this machine, llvmpipe. The frame time is a CPU-renderer number, not the Windows GPU.
+
+| | Frame | Script | Draws | Triangles | Frame sd | Min | p95 | p99 | Max |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| v0.14.0 (v11 hull) | 133.3 ms | 0.88 ms | 1193 | 1,114 k | 6.5 ms | 119 ms | 144 ms | 148 ms | 148 ms |
+| v0.15.0 (v17 hull) | 133.4 ms | 0.72 ms | 1213 | 1,121 k | 4.8 ms | 119 ms | 139 ms | 144 ms | 144 ms |
+
+The file itself is 417,764 triangles. Draws went up by 20, for the feed skins, the rotary domes and the decal surfaces. The mean frame did not move.

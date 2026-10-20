@@ -2,7 +2,7 @@ class_name ShipModel
 extends Node3D
 ## A ship as the game draws it. Mars and the lasers-only Dagger come from models/mars.glb and models/earth.glb
 ## (art/build_ships.py, art/import_dagger.py). The Lance, the Earth ship that carries the coilgun, is the Arbiter
-## TDC v8 hull (models/arbiter.glb): same axis convention, its own mesh, and the clips exported with it.
+## TDC v17 hull (models/arbiter.glb): same axis convention, its own mesh, and the clips exported with it.
 ## This script finds the named parts and brings them to life: turrets turn toward the target, radiators fold and
 ## glow with heat, OMS jets and the drive plume show the burn, knocked-out turrets go dark, and the armour view
 ## tints each hull section by its condition.
@@ -60,6 +60,11 @@ var _gun_fx_left := 0.0
 var _charge_span := 0.0              # length of the wait the charge clip is currently playing across
 var _charge_u := -1.0                # last charge-clip fraction applied; a repeat seek is skipped
 var _sensor: Array = []              # [yaw, pitch, rest yaw, rest pitch, look dir in yaw space, alpha, beta]
+## Rotary point-defence feeds. TurretTrack bends RT0N_Flex_01..07 with the head, but that clip is not played:
+## live aim turns the yaw and pitch. Each bone's pose is the rest pose plus a linear function of those two
+## angles, fitted from the clip, and both the head and the hose stop at the clip's arc so the hose cannot
+## be left straight while the head swings away.
+var _feeds: Array = []
 var _laser_beams: Array = []         # per sim turret: the model's beam node, or a simple beam on the Dagger and Mars
 var _laser_player: AnimationPlayer
 var _gimbal_ready := false           # first aim snaps; easing starts from a pose that already points
@@ -688,6 +693,7 @@ func _build_arbiter() -> void:
 	_quiet_arbiter_shadows(root)
 	_build_arbiter_oms(root)
 	_build_arbiter_anims(root)
+	_bind_ammo_feeds()
 	_tame_arbiter_emission(root)
 	_double_side_housings(root)
 	var far := root.find_child("Target_Track_Point", true, false) as Node3D
@@ -869,21 +875,31 @@ func _share_player(src: AnimationPlayer, pname: String) -> AnimationPlayer:
 ## rest key for every animated node into every clip. Playing the drive was therefore pinning the turrets, the
 ## sensor and the radiator wings at the rest pose: wings stayed out while the panel said stowed, and a closing
 ## burn froze the lasers off the target. Each clip keeps only its own nodes.
-func _clip_keeps(aname: String) -> String:
-	if aname.begins_with("Coilgun"): return "Coilgun_"
-	if aname.begins_with("MainDrive"): return "MainDrive_"
-	if aname.begins_with("OMS"): return "OMS_"
-	if aname.begins_with("Radiator"): return "Radiator_"
-	if aname.begins_with("Laser"): return "LaserBeam"
-	if aname.begins_with("VLS"): return "VLS_"
-	if aname.begins_with("Turret") or aname.begins_with("Rotary"): return "Turret_"
-	if aname.begins_with("Sensor"): return "Sensor_"
-	return ""
+func _clip_keeps(aname: String) -> PackedStringArray:
+	if aname.begins_with("Coilgun"): return PackedStringArray(["Coilgun_"])
+	if aname.begins_with("MainDrive"): return PackedStringArray(["MainDrive_"])
+	if aname.begins_with("OMS"): return PackedStringArray(["OMS_"])
+	if aname.begins_with("Radiator"): return PackedStringArray(["Radiator_"])
+	if aname.begins_with("Laser"): return PackedStringArray(["LaserBeam"])
+	if aname.begins_with("VLS"): return PackedStringArray(["VLS_"])
+	# The hose bones import as Skeleton3D:RT0N_Flex under RotaryTurret_. "Turret_" matches that path
+	# today. "Flex" and "RT0" keep the channels if a later import shortens the path. No other clip lists
+	# them, so the rest keys Godot inserts for those bones are stripped everywhere else.
+	if aname.begins_with("Turret") or aname.begins_with("Rotary"):
+		return PackedStringArray(["Turret_", "Flex", "RT0"])
+	if aname.begins_with("Sensor"): return PackedStringArray(["Sensor_"])
+	return PackedStringArray()
 
-func _isolate_clip_tracks(anim: Animation, needle: String) -> void:
-	if needle == "": return
+func _isolate_clip_tracks(anim: Animation, needles: PackedStringArray) -> void:
+	if needles.is_empty(): return
 	for i in range(anim.get_track_count() - 1, -1, -1):
-		if needle not in str(anim.track_get_path(i)):
+		var path := str(anim.track_get_path(i))
+		var keep := false
+		for needle in needles:
+			if needle in path:
+				keep = true
+				break
+		if not keep:
 			anim.remove_track(i)
 
 ## Clips stay on the imported player. Radiators are posed from RadiatorDeploy (0 stowed, 1 deployed). The drive
@@ -915,6 +931,175 @@ func _build_arbiter_anims(root: Node3D) -> void:
 		_rad_player.speed_scale = 0.0
 		_rad_player.play("RadiatorDeploy")
 		_rad_player.seek(deploy.length, true)
+
+## Read TurretTrack (after the other clips have lost these tracks) and fit each hose bone to the head's yaw
+## and pitch. The bones are Skeleton3D poses, not nodes: the glTF joints were imported as bones.
+func _bind_ammo_feeds() -> void:
+	if _rad_player == null or not _rad_player.has_animation("TurretTrack"): return
+	var anim := _rad_player.get_animation("TurretTrack")
+	for lname in _rad_player.get_animation_library_list():
+		var slib := _rad_player.get_animation_library(lname)
+		for aname in slib.get_animation_list():
+			if aname.begins_with("Turret") or aname.begins_with("Rotary"): continue
+			var other := slib.get_animation(aname)
+			for i in other.get_track_count():
+				var path := str(other.track_get_path(i))
+				if "Flex" in path or "RT0" in path:
+					push_error("ammo-feed track left on %s: %s" % [aname, path])
+	var root := _rad_player.get_parent()
+	for n in range(1, 5):
+		var tag := "%02d" % n
+		var yaw := root.find_child("RotaryTurret_%s_Yaw" % tag, true, false) as Node3D
+		var pitch := root.find_child("RotaryTurret_%s_Pitch" % tag, true, false) as Node3D
+		var rig := root.find_child("RotaryTurret_%s_AmmoFeed_Flex_Rig" % tag, true, false) as Node3D
+		if yaw == null or pitch == null or rig == null: continue
+		var skel := rig.find_child("Skeleton3D", true, false) as Skeleton3D
+		if skel == null: continue
+		var yaw_track := _feed_track(anim, "RotaryTurret_%s_Yaw" % tag, Animation.TYPE_ROTATION_3D)
+		var pitch_track := _feed_track(anim, "RotaryTurret_%s_Pitch" % tag, Animation.TYPE_ROTATION_3D)
+		if yaw_track < 0 or pitch_track < 0: continue
+		var rest_y: Quaternion = yaw.quaternion
+		var rest_p: Quaternion = pitch.quaternion
+		var samples := 48
+		var dy := PackedFloat32Array()
+		var dp := PackedFloat32Array()
+		dy.resize(samples)
+		dp.resize(samples)
+		var ymin := 0.0
+		var ymax := 0.0
+		var pmin := 0.0
+		var pmax := 0.0
+		for s in samples:
+			var t := anim.length * float(s) / float(samples - 1)
+			var yq: Quaternion = anim.rotation_track_interpolate(yaw_track, t)
+			var pq: Quaternion = anim.rotation_track_interpolate(pitch_track, t)
+			var ay := _angle_about(rest_y, yq, Vector3.UP)
+			var ap := _angle_about(rest_p, pq, Vector3(0, 0, 1))
+			dy[s] = ay
+			dp[s] = ap
+			ymin = minf(ymin, ay)
+			ymax = maxf(ymax, ay)
+			pmin = minf(pmin, ap)
+			pmax = maxf(pmax, ap)
+		var bones: Array = []
+		for b in skel.get_bone_count():
+			var bone_name := skel.get_bone_name(b)
+			if not bone_name.begins_with("RT"): continue
+			var pos_track := _feed_track(anim, bone_name, Animation.TYPE_POSITION_3D)
+			var rot_track := _feed_track(anim, bone_name, Animation.TYPE_ROTATION_3D)
+			var rest_pos := skel.get_bone_pose_position(b)
+			var rest_quat := skel.get_bone_pose_rotation(b)
+			var tx := PackedFloat32Array()
+			var ty := PackedFloat32Array()
+			var tz := PackedFloat32Array()
+			var rx := PackedFloat32Array()
+			var ry := PackedFloat32Array()
+			var rz := PackedFloat32Array()
+			tx.resize(samples); ty.resize(samples); tz.resize(samples)
+			rx.resize(samples); ry.resize(samples); rz.resize(samples)
+			for s in samples:
+				var t := anim.length * float(s) / float(samples - 1)
+				var pos := rest_pos
+				if pos_track >= 0:
+					pos = anim.position_track_interpolate(pos_track, t)
+				var rv := Vector3.ZERO
+				if rot_track >= 0:
+					rv = _rotvec(rest_quat, anim.rotation_track_interpolate(rot_track, t))
+				var delta := pos - rest_pos
+				tx[s] = delta.x; ty[s] = delta.y; tz[s] = delta.z
+				rx[s] = rv.x; ry[s] = rv.y; rz[s] = rv.z
+			var fx := _fit_slope(dy, dp, tx)
+			var fy := _fit_slope(dy, dp, ty)
+			var fz := _fit_slope(dy, dp, tz)
+			var frx := _fit_slope(dy, dp, rx)
+			var fry := _fit_slope(dy, dp, ry)
+			var frz := _fit_slope(dy, dp, rz)
+			bones.append({
+				"idx": b,
+				"rest_pos": rest_pos,
+				"rest_quat": rest_quat,
+				"t_yaw": Vector3(fx.x, fy.x, fz.x),
+				"t_pitch": Vector3(fx.y, fy.y, fz.y),
+				"r_yaw": Vector3(frx.x, fry.x, frz.x),
+				"r_pitch": Vector3(frx.y, fry.y, frz.y),
+			})
+		var b0: Vector3 = (pitch.transform.basis * Vector3.RIGHT).normalized()
+		_feeds.append({
+			"yaw": yaw, "pitch": pitch, "rest_y": rest_y, "rest_p": rest_p, "b0": b0,
+			"alpha": 0.0, "beta": 0.0, "skel": skel, "bones": bones,
+			"yaw_min": ymin, "yaw_max": ymax, "pitch_min": pmin, "pitch_max": pmax,
+		})
+
+func _feed_track(anim: Animation, leaf: String, type: Animation.TrackType) -> int:
+	for i in anim.get_track_count():
+		if anim.track_get_type(i) != type: continue
+		var path := str(anim.track_get_path(i))
+		var tail := path.substr(path.rfind("/") + 1)
+		if tail == leaf or tail.begins_with(leaf + ":") or tail == "Skeleton3D:" + leaf or tail.ends_with(":" + leaf):
+			return i
+	return -1
+
+## z = a * yaw + b * pitch, through the rest pose. Returns (a, b).
+func _fit_slope(yaw: PackedFloat32Array, pitch: PackedFloat32Array, value: PackedFloat32Array) -> Vector2:
+	var s11 := 0.0
+	var s12 := 0.0
+	var s22 := 0.0
+	var r1 := 0.0
+	var r2 := 0.0
+	for i in value.size():
+		var x := yaw[i]
+		var y := pitch[i]
+		s11 += x * x
+		s12 += x * y
+		s22 += y * y
+		r1 += x * value[i]
+		r2 += y * value[i]
+	var det := s11 * s22 - s12 * s12
+	if absf(det) < 1e-8: return Vector2.ZERO
+	return Vector2((r1 * s22 - r2 * s12) / det, (s11 * r2 - s12 * r1) / det)
+
+func _angle_about(rest: Quaternion, q: Quaternion, axis: Vector3) -> float:
+	var d := rest.inverse() * q
+	if d.w < 0.0:
+		d = Quaternion(-d.x, -d.y, -d.z, -d.w)
+	var v := Vector3(d.x, d.y, d.z)
+	var along := v.dot(axis)
+	var s := v.length()
+	if s < 1e-8: return 0.0
+	var sign := 1.0 if absf(along) <= 1e-8 or along > 0.0 else -1.0
+	return 2.0 * atan2(s, d.w) * sign
+
+func _rotvec(rest: Quaternion, q: Quaternion) -> Vector3:
+	var d := rest.inverse() * q
+	if d.w < 0.0:
+		d = Quaternion(-d.x, -d.y, -d.z, -d.w)
+	var v := Vector3(d.x, d.y, d.z)
+	var s := v.length()
+	if s < 1e-8: return Vector3.ZERO
+	return v / s * (2.0 * atan2(s, d.w))
+
+func _quat_from_rotvec(v: Vector3) -> Quaternion:
+	var a := v.length()
+	if a < 1e-8: return Quaternion.IDENTITY
+	return Quaternion(v / a, a)
+
+func _aim_rotary(at: Vector3) -> void:
+	for rec in _feeds:
+		var yaw: Node3D = rec["yaw"]
+		var dir := at - yaw.global_position
+		if dir.length_squared() < 1.0: continue
+		var ang := _gimbal_angles(yaw, rec["rest_y"], rec["b0"], dir.normalized(), rec["alpha"], rec["beta"])
+		ang.x = clampf(ang.x, rec["yaw_min"], rec["yaw_max"])
+		ang.y = clampf(ang.y, rec["pitch_min"], rec["pitch_max"])
+		rec["alpha"] = ang.x
+		rec["beta"] = ang.y
+		_apply_gimbal(yaw, rec["pitch"], rec["rest_y"], rec["rest_p"], ang, 1.0)
+		var skel: Skeleton3D = rec["skel"]
+		for bone in rec["bones"]:
+			var pos: Vector3 = bone["rest_pos"] + bone["t_yaw"] * ang.x + bone["t_pitch"] * ang.y
+			var rv: Vector3 = bone["r_yaw"] * ang.x + bone["r_pitch"] * ang.y
+			skel.set_bone_pose_position(bone["idx"], pos)
+			skel.set_bone_pose_rotation(bone["idx"], bone["rest_quat"] * _quat_from_rotvec(rv))
 
 ## LaserFire, as exported, scales every beam (and, once imported, a pile of unrelated rest poses). Keep only the
 ## three beam scales. The clip pulses each beam up to full size and hides it the rest of the time; a turret that
@@ -1049,7 +1234,9 @@ func _aim_arbiter(aims: Array, blend: float) -> void:
 ## The dorsal sensor looks along the pitch node's local +X (the lens sits on that side). Same yaw-about-Y,
 ## pitch-about-Z rig as the laser heads. The demo never hides a ship behind anything, so it just looks at the enemy.
 func aim_sensor(at: Vector3) -> void:
-	if not arbiter or _sensor.is_empty() or not is_inside_tree(): return
+	if not arbiter or not is_inside_tree(): return
+	_aim_rotary(at)
+	if _sensor.is_empty(): return
 	var yaw: Node3D = _sensor[0]
 	var dir := at - yaw.global_position
 	if dir.length_squared() < 1.0: return

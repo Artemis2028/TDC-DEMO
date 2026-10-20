@@ -14,17 +14,19 @@ Run:  python art/prepare_arbiter.py [src.glb] [dst.glb]
 
 A denser hull drops in as the source glb. Keep the node names the game looks up
 (turret yaw/pitch, sensor yaw/pitch, coil glows, radiator geos, the OMS plume
-nodes including OMS_A010_Fore_Bottom_Plume_Radial, the drive plume) and the 13
+nodes including OMS_A010_Fore_Bottom_Plume_Radial, the drive plume, the rotary
+ammo-feed flex bones RT0N_Flex_00..07 and the rotary dome geos) and the 13
 animation names below. Do not rename them and do not subdivide here: the
 silhouette comes from the file. A base colour the file already set (anything
 other than default white) is left alone; only a material still at the glTF
 default is filled from the colour in its name. Emissive strength is capped.
 Meshes whose normals already leave the face (weighted normals) are left as
 authored; face-flat meshes are still smoothed across gentle edges. The script
-refuses to write a file that dropped an animation or a required node. Godot
-imports with mesh LODs off
+refuses to write a file that dropped an animation, a required node, or a skin
+joint. Godot imports with mesh LODs off and embedded images as Basis Universal
 (game/models/arbiter.glb.import); it also inserts a rest track for every
-animated node into every clip, which the game strips.
+animated node into every clip, which the game strips. TurretTrack's flex
+channels stay on that clip only.
 """
 import json
 import os
@@ -32,7 +34,7 @@ import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC_DEFAULT = os.path.join(HERE, "source", "arbiter-TDC_v11.glb")
+SRC_DEFAULT = os.path.join(HERE, "source", "arbiter-TDC_v17.glb")
 DST_DEFAULT = os.path.join(HERE, "..", "game", "models", "arbiter.glb")
 
 # World Z of the section planes (authored metres, nose at -Z).
@@ -375,6 +377,7 @@ _EMISSIVE_CAP = {
     "MAT_Strobe_White": 1.8,
     "MAT_FX_LaserBeam": 1.8,
     "MAT_FX_LaserGlow": 1.4,
+    "MAT_FX_OMSGas": 1.45,
     "MAT_ArmedRing_Teal_7FD1C7.001": 1.8,
 }
 
@@ -721,6 +724,17 @@ def prune_unreachable(gltf):
     for a in gltf["animations"]:
         for ch in a["channels"]:
             ch["target"]["node"] = mp[ch["target"]["node"]]
+    # Skins point at joint nodes by index. Remap them with the nodes or the hose
+    # deforms off the wrong bone after fittings are pruned.
+    for sk in gltf.get("skins", []):
+        for j in sk.get("joints", []):
+            if j not in mp:
+                raise SystemExit("skin joint left the scene: %s" % nodes[j].get("name"))
+        sk["joints"] = [mp[j] for j in sk["joints"]]
+        if "skeleton" in sk:
+            if sk["skeleton"] not in mp:
+                raise SystemExit("skin skeleton left the scene")
+            sk["skeleton"] = mp[sk["skeleton"]]
     return len(nodes) - len(new_nodes)
 
 
@@ -747,6 +761,9 @@ def compact_buffers(gltf, blob):
         for s in a["samplers"]:
             used_a.add(s["input"])
             used_a.add(s["output"])
+    for sk in gltf.get("skins", []):
+        if "inverseBindMatrices" in sk:
+            used_a.add(sk["inverseBindMatrices"])
     keep_a = sorted(used_a)
     am = {old: new for new, old in enumerate(keep_a)}
     new_accessors = []
@@ -762,6 +779,9 @@ def compact_buffers(gltf, blob):
         for s in a["samplers"]:
             s["input"] = am[s["input"]]
             s["output"] = am[s["output"]]
+    for sk in gltf.get("skins", []):
+        if "inverseBindMatrices" in sk:
+            sk["inverseBindMatrices"] = am[sk["inverseBindMatrices"]]
     used_v = set()
     for acc in new_accessors:
         if "bufferView" in acc:
@@ -810,6 +830,17 @@ REQUIRED_NODES = (
     "Coilgun_A093_Barrel_Recoil", "Coilgun_MuzzleFlash", "Coilgun_MuzzleFlare",
     "Coilgun_Projectile", "MainDrive_A001-A004_Plume", "Target_Track_Point",
 )
+# Ammo-feed hoses. Eight bones per rotary turret, skinned, posed from TurretTrack.
+# The game does not play that clip; it aims the turret and derives the bones from
+# the same angles, so a drop-in that renames a bone freezes the hose.
+FLEX_NODES = tuple(
+    "RT%02d_Flex_%02d" % (turret, seg)
+    for turret in range(1, 5)
+    for seg in range(8)
+)
+# Domes sit on the pitch node, so they turn with the head. A dome left on the base
+# would stay behind when the turret aims.
+DOME_NODES = tuple("RotaryTurret_%02d_Dome_Geo" % turret for turret in range(1, 5))
 # The game scales these itself. OMSBurn is not played. A010's radial is part of
 # that set: a drop-in that omits it would hide the fore-bottom bell with no error.
 OMS_PLUME_NODES = tuple(
@@ -823,10 +854,13 @@ OMS_PLUME_NODES = tuple(
 
 
 def check_contract(gltf):
-    names = {n.get("name") for n in gltf["nodes"]}
+    nodes = gltf["nodes"]
+    names = {n.get("name") for n in nodes}
     anims = {a.get("name") for a in gltf.get("animations", [])}
     missing_n = [n for n in REQUIRED_NODES if n not in names]
     missing_n += [n for n in OMS_PLUME_NODES if n not in names]
+    missing_n += [n for n in FLEX_NODES if n not in names]
+    missing_n += [n for n in DOME_NODES if n not in names]
     missing_a = [a for a in REQUIRED_ANIMS if a not in anims]
     coils = [n for n in names if n and n.startswith("Coilgun_Coil_") and n.endswith("_Glow")]
     rads = [n for n in names if n and n.startswith("Radiator_") and n.endswith("_Geo")]
@@ -834,6 +868,31 @@ def check_contract(gltf):
         missing_n.append("Coilgun_Coil_*_Glow")
     if len(rads) < 8:
         missing_n.append("Radiator_*_Geo (found %d)" % len(rads))
+    if len(nodes) < 325:
+        missing_n.append("node count %d, v17 hull has 325" % len(nodes))
+    parent = {}
+    for n in nodes:
+        for c in n.get("children", []):
+            parent[c] = n.get("name")
+    name_i = {n.get("name"): i for i, n in enumerate(nodes)}
+    for dome in DOME_NODES:
+        turret = dome.split("_")[1]
+        want = "RotaryTurret_%s_Pitch" % turret
+        if dome in name_i and parent.get(name_i[dome]) != want:
+            missing_n.append("%s parent is %s, want %s" % (dome, parent.get(name_i[dome]), want))
+    tt = next((a for a in gltf.get("animations", []) if a.get("name") == "TurretTrack"), None)
+    if tt is not None:
+        targeted = {nodes[ch["target"]["node"]].get("name") for ch in tt["channels"]}
+        flex_missing = [n for n in FLEX_NODES if n not in targeted]
+        if flex_missing:
+            missing_n.append("TurretTrack missing flex %s" % flex_missing)
+    skins = gltf.get("skins", [])
+    joint_names = []
+    for sk in skins:
+        joint_names.extend(nodes[j].get("name") for j in sk.get("joints", []))
+    flex_unskinned = [n for n in FLEX_NODES if n not in joint_names]
+    if flex_unskinned:
+        missing_n.append("flex bones not in a skin %s" % flex_unskinned)
     if missing_n or missing_a:
         raise SystemExit("replacement glb is missing nodes %s animations %s" % (missing_n, missing_a))
     # Every material draws both sides unless a later art pass says otherwise. An open-looking
@@ -904,6 +963,7 @@ def main(src, dst):
     print("primitives %d -> %d on live meshes; fittings absorbed %d nodes; pruned %d" % (before, after, dropped, gone))
     print("scene primitives", prims, "triangles", tris)
     print("animations", len(gltf["animations"]), "missing targets", missing, "coils", coils, "radiator geos", rads)
+    print("nodes", len(gltf["nodes"]), "skins", len(gltf.get("skins", [])))
     print("wrote", dst, os.path.getsize(dst))
 
 
