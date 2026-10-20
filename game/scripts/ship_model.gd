@@ -2,7 +2,7 @@ class_name ShipModel
 extends Node3D
 ## A ship as the game draws it. Mars and the lasers-only Dagger come from models/mars.glb and models/earth.glb
 ## (art/build_ships.py, art/import_dagger.py). The Lance, the Earth ship that carries the coilgun, is the Arbiter
-## TDC v18d hull (models/arbiter.glb): same axis convention, its own mesh, and the clips exported with it.
+## TDC v18f hull (models/arbiter.glb): same axis convention, its own mesh, and the clips exported with it.
 ## This script finds the named parts and brings them to life: turrets turn toward the target, radiators fold and
 ## glow with heat, OMS jets and the drive plume show the burn, knocked-out turrets go dark, and the armour view
 ## tints each hull section by its condition.

@@ -3,6 +3,10 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.16.2
+- The Lance is the Arbiter TDC v18f hull (`art/source/arbiter-TDC_v18f.glb`, 43,432,072 bytes, SHA-256 `b53ecdcf45d4f302a01aa430a681064700e3ea46133c7cc1718646dfa3c4c742`). The v18d source is gone. The previous nodes and all 270 channels are still there. The four PDL-7 point-defence mounts are rebuilt as phased arrays: each has 90 raised deep-violet hex tiles in `PDL7_<Unit>_HexEmitters_Geo` under `PointDefence_PDL`, an octagon frame with flat iris blades, and a dark gunmetal plate. 335 nodes, 450,653 triangles. The name stays UEN Second Opinion, the class stays Coil Gun Frigate, and the Dagger and the Mars frigate are unchanged.
+- The hex tiles keep `MAT_PDL7_HexEmitter_Violet`. Its emission is the file's faint violet, peak about 0.06 with no strength multiplier, under the bloom threshold, so the tiles read violet and do not wash the hull. The faces point outward. The housing is still split into the nose and body fittings, so it keeps its shadow.
+
 ## v0.16.1
 - The EO scope stays a live picture of the target in every battle view, including the tactical plot. The plot had stopped that small viewport from drawing while the panel kept showing its texture. As the track changed, the picture was resized into memory nothing had drawn into, so on a real GPU the scope filled with coloured noise. The main 3D view still stops rendering while the plot is up.
 - Unlimited no longer locks to the display. It had left vsync on, and a zero frame cap does not turn vsync off, so a 60 Hz screen stayed at 60. Unlimited now turns vsync off and sets no cap. Settings has a VSync switch, on by default, for the 60, 120 and 144 caps. A cap below the display still paces the frames with vsync off. The sim still steps at 10 Hz from the real frame time, and the picture still fills in between those steps.

@@ -122,3 +122,14 @@ Same live bench (`--bench 40 --class 1 --speed 2`), on this machine, llvmpipe. T
 | v0.16.0 (v18d hull) | 133.6 ms | 0.95 ms | 1223 | 1,190 k | 5.5 ms | 122 ms | 146 ms | 146 ms | 146 ms |
 
 The file itself is 447,743 triangles. Draws went up by 10, for the secondary-mirror discs, the aperture glow rings and the single-sided copies of the laser-ball materials. The reflection probe is captured once at spawn and does not move, so it is not in the frame time. The mean frame did not move.
+
+## Arbiter TDC v18f (v0.16.2)
+
+Same live bench (`--bench 40 --class 1 --speed 2`), on this machine, llvmpipe. The frame time is a CPU-renderer number, not the Windows GPU. v0.16.1 did not change the hull, so its row is a same-day measurement of the v18d mesh.
+
+| | Frame | Script | Draws | Triangles | Frame sd | Min | p95 | p99 | Max |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| v0.16.1 (v18d hull) | 133.4 ms | 0.97 ms | 1223 | 1,190 k | 5.8 ms | 123 ms | 146 ms | 148 ms | 148 ms |
+| v0.16.2 (v18f hull) | 133.2 ms | 1.01 ms | 1243 | 1,198 k | 7.0 ms | 118 ms | 145 ms | 149 ms | 149 ms |
+
+The file itself is 450,653 triangles, 2,910 more than v18d. Draws went up by 20, for the four hex-tile meshes and their shadows. The housing stays in the section fittings, so it still casts a shadow. The mean frame did not move.

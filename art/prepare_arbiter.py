@@ -34,7 +34,7 @@ import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC_DEFAULT = os.path.join(HERE, "source", "arbiter-TDC_v18d.glb")
+SRC_DEFAULT = os.path.join(HERE, "source", "arbiter-TDC_v18f.glb")
 DST_DEFAULT = os.path.join(HERE, "..", "game", "models", "arbiter.glb")
 
 # World Z of the section planes (authored metres, nose at -Z).
@@ -382,6 +382,9 @@ _EMISSIVE_CAP = {
     # Just over the glow threshold (1.6) so the aperture ring blooms, and under the
     # old coil-gun wash. The runtime tamer leaves a peak of 1.7 alone.
     "MAT_FEL_ApertureGlow_White": 1.7,
+    # PDL-7 hex tiles. The authored factor is about 0.06 with no strength extension, a deep
+    # violet that should read and not bloom. A later multiplier stays at 1.
+    "MAT_PDL7_HexEmitter_Violet": 1.0,
 }
 
 
@@ -400,6 +403,23 @@ def cap_emissive_strength(gltf):
         if limit is None or strength <= limit:
             continue
         kh["emissiveStrength"] = limit
+        capped += 1
+    # The hex tiles' colour is already a faint violet. A strength cap cannot pull a hot
+    # factor down, so the factor itself is scaled until the product stays under 0.35,
+    # well below the bloom threshold of 1.6. The approved file is about 0.06 and is left as it is.
+    for m in gltf["materials"]:
+        if m.get("name") != "MAT_PDL7_HexEmitter_Violet":
+            continue
+        fac = m.get("emissiveFactor")
+        if not fac:
+            continue
+        ext = (m.get("extensions") or {}).get("KHR_materials_emissive_strength") or {}
+        strength = float(ext.get("emissiveStrength", 1.0))
+        peak = max(float(c) for c in fac[:3])
+        if peak * strength <= 0.35:
+            continue
+        scale = 0.35 / (peak * strength)
+        m["emissiveFactor"] = [float(c) * scale for c in fac]
         capped += 1
     return capped
 
@@ -644,6 +664,24 @@ def merge_mesh_prims(gltf, blob, node_ids, canon):
     return before, after
 
 
+def detach_point_defence_housing(gltf, root):
+    """v18f parents the hex tiles to PointDefence_PDL. A root mesh with children is left
+    whole, so the housing would skip the section split and the fittings merge, and the
+    shadow quiet on that node name would stop it casting. Move the housing mesh onto a
+    childless stand-in. The hex nodes stay under PointDefence_PDL."""
+    nodes = gltf["nodes"]
+    children = nodes[root].get("children", [])
+    for ci in children:
+        n = nodes[ci]
+        if n.get("name") != "PointDefence_PDL" or "mesh" not in n:
+            continue
+        stand = {"name": "PointDefence_PDL_Housing", "mesh": n.pop("mesh")}
+        nodes.append(stand)
+        children.append(len(nodes) - 1)
+        return 1
+    return 0
+
+
 def merge_fittings(gltf, blob, root):
     """Join static root meshes that are not the pressure hull and share a section and a material.
     Root children here are at identity, so vertices already share a space. Hull nodes stay, so the
@@ -871,11 +909,11 @@ def check_contract(gltf):
         missing_n.append("Coilgun_Coil_*_Glow")
     if len(rads) < 8:
         missing_n.append("Radiator_*_Geo (found %d)" % len(rads))
-    if len(nodes) < 331:
-        missing_n.append("node count %d, v18d hull has 331" % len(nodes))
+    if len(nodes) != 335:
+        missing_n.append("node count %d, v18f hull has 335" % len(nodes))
     channels = sum(len(a.get("channels", [])) for a in gltf.get("animations", []))
     if channels != 270:
-        missing_n.append("channel count %d, v18d hull has 270" % channels)
+        missing_n.append("channel count %d, v18f hull has 270" % channels)
     if nodes[gltf["scenes"][gltf.get("scene", 0)]["nodes"][0]].get("name") != "arbiter-TDC":
         missing_n.append("root is not arbiter-TDC")
     parent = {}
@@ -885,6 +923,21 @@ def check_contract(gltf):
     name_i = {n.get("name"): i for i, n in enumerate(nodes)}
     # v18d adds the secondary-mirror disc and the aperture glow on each laser head.
     # They have to stay on the pitch node the aim code already turns.
+    # v18f rebuilds the four PDL-7 mounts. The raised hex tiles are their own meshes
+    # under PointDefence_PDL, so a drop-in that folds them back into the parent loses them.
+    for hex_name in (
+        "PDL7_Bow_Port_HexEmitters_Geo",
+        "PDL7_Bow_Stbd_HexEmitters_Geo",
+        "PDL7_Flank_Port_Aft_HexEmitters_Geo",
+        "PDL7_Flank_Stbd_Aft_HexEmitters_Geo",
+    ):
+        if hex_name not in name_i:
+            missing_n.append(hex_name)
+            continue
+        if parent.get(name_i[hex_name]) != "PointDefence_PDL":
+            missing_n.append("%s parent is %s, want PointDefence_PDL" % (hex_name, parent.get(name_i[hex_name])))
+    if sum(1 for m in gltf["materials"] if m.get("name") == "MAT_PDL7_HexEmitter_Violet") != 1:
+        missing_n.append("MAT_PDL7_HexEmitter_Violet")
     for turret in (1, 2, 3):
         for kind in ("SecondaryMirrorFace_Geo", "ApertureGlowRing_Geo"):
             nm = "Turret_%02d_%s" % (turret, kind)
@@ -969,11 +1022,12 @@ def main(src, dst):
     painted = paint_named_colors(gltf)
     capped = cap_emissive_strength(gltf)
     nodes = gltf["nodes"]
+    root = gltf["scenes"][gltf.get("scene", 0)]["nodes"][0]
+    detach_point_defence_housing(gltf, root)
     anim = set()
     for a in gltf["animations"]:
         for ch in a["channels"]:
             anim.add(ch["target"]["node"])
-    root = gltf["scenes"][gltf.get("scene", 0)]["nodes"][0]
     children = list(nodes[root].get("children", []))
     new_children = []
     replaced = 0
