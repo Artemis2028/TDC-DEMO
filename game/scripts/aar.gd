@@ -229,8 +229,30 @@ func _first(ship: int, tm: float) -> void:
 		_first_dmg[ship] = tm
 
 func _keep(e: Dictionary) -> void:
-	if _ev.size() < MAX_STORED:
-		_ev.append({"t": float(e["time"]), "ship": int(e["ship"]), "kind": str(e["kind"]), "text": str(e["text"])})
+	if _ev.size() >= MAX_STORED:
+		return
+	var row := {"t": float(e["time"]), "ship": int(e["ship"]), "kind": str(e["kind"]), "text": str(e["text"])}
+	var weapon := str(e.get("weapon", ""))
+	var section := str(e.get("section", ""))
+	if weapon != "":
+		row["weapon"] = weapon
+	if section != "":
+		row["section"] = section
+	_ev.append(row)
+
+## Beam-or-round and the armour section come from the sim event. The sentence is only a fallback for a log
+## written before those fields existed.
+func _burn_facts(e: Dictionary, tx: String) -> Array:
+	var weapon := str(e.get("weapon", ""))
+	var sec := str(e.get("section", ""))
+	if weapon == "":
+		weapon = "beam" if tx.begins_with("Beam") else "rounds"
+	if sec == "":
+		sec = "body"
+		for nm in SEC_NAMES:
+			if tx.contains("the %s armour" % nm):
+				sec = nm
+	return [weapon, sec]
 
 func _on_event(e: Dictionary, s0: Dictionary, s1: Dictionary) -> void:
 	var k := str(e["kind"])
@@ -254,11 +276,9 @@ func _on_event(e: Dictionary, s0: Dictionary, s1: Dictionary) -> void:
 		"burn-through":
 			if sh == 0 or sh == 1:
 				_first(sh, tm)
-				var weapon := "beam" if tx.begins_with("Beam") else "rounds"
-				var sec := "body"
-				for nm in SEC_NAMES:
-					if tx.contains("the %s armour" % nm):
-						sec = nm
+				var facts := _burn_facts(e, tx)
+				var weapon: String = facts[0]
+				var sec: String = facts[1]
 				var key := "%s %s" % [weapon, sec]
 				_bt[sh][key] = int(_bt[sh].get(key, 0)) + 1
 				if weapon == "rounds":
@@ -368,6 +388,11 @@ func _build() -> void:
 	notes.append("1 point = 1% of a ship's armour + structure at the start. Laser hits are not logged one by one, so damage by weapon is inferred from when each weapon was firing or landing.")
 	report = {"headline": _headline(), "timeline": picked, "insights": chosen, "notes": notes}
 
+## The coilgun Earth class is stored as Lance and labelled UEN Second Opinion. Dagger and Mars stay as stored.
+func _shown_ship_name(ship: Dictionary) -> String:
+	var n := str(ship["name"])
+	return "UEN Second Opinion" if n == "Lance" else n
+
 func _headline() -> Array:
 	var won := winner == 0
 	var lines: Array = []
@@ -387,7 +412,7 @@ func _headline() -> Array:
 	lines.append("Enemy captain was " + style)
 	var loser: Dictionary = _final1 if won else _final0
 	if winner >= 0:
-		lines.append("%s is out of action: %s." % [str(loser["name"]), str(loser["out_reason"])])
+		lines.append("%s is out of action: %s." % [_shown_ship_name(loser), str(loser["out_reason"])])
 	lines.append("Hull at the end: you %d%%, enemy %d%%. Crew: you %d of %d, enemy %d of %d." % [
 		int(float(_final0["hull"]) * 100), int(float(_final1["hull"]) * 100),
 		int(_final0["crew"]), int(_final0["crew_max"]), int(_final1["crew"]), int(_final1["crew_max"])])
@@ -417,11 +442,9 @@ func _timeline(tl: Array, drop0: PackedFloat32Array, drop1: PackedFloat32Array) 
 		var tx: String = e["text"]
 		match e["kind"]:
 			"burn-through":
-				var weapon := "beam" if tx.begins_with("Beam") else "rounds"
-				var sec := "body"
-				for nm in SEC_NAMES:
-					if tx.contains("the %s armour" % nm):
-						sec = nm
+				var facts := _burn_facts(e, tx)
+				var weapon: String = facts[0]
+				var sec: String = facts[1]
 				if sh == 1:
 					_tl(tl, t, "Your %s through the enemy's %s armour." % ["beam burns" if weapon == "beam" else "rounds burn", sec], 1, 75)
 				else:

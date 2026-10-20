@@ -15,7 +15,10 @@ var _vol: HSlider
 var _vol_txt: Label
 var _win_btns: Array = []
 var _fps_btns: Array = []
+var _vs_btns: Array = []
 var _fc_btns: Array = []
+var _beam_btns: Array = []
+var _fpsread_btns: Array = []
 var _status: Label
 
 ## Put a new panel on its own canvas layer above the menu (menu is layer 5) and return it. Hidden until open().
@@ -57,12 +60,12 @@ func _build() -> void:
 	var sb := UI.box(UI.PANEL, UI.PRI, 1)
 	sb.content_margin_left = 28
 	sb.content_margin_right = 28
-	sb.content_margin_top = 22
-	sb.content_margin_bottom = 22
+	sb.content_margin_top = 16
+	sb.content_margin_bottom = 16
 	pc.add_theme_stylebox_override("panel", sb)
 	cc.add_child(pc)
 	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 9)
+	v.add_theme_constant_override("separation", 6)
 	pc.add_child(v)
 	v.add_child(UI.label("Settings", 32, UI.PRI))
 
@@ -96,7 +99,13 @@ func _build() -> void:
 		var b := UI.button("Unlimited" if cap == 0 else str(cap), func(): _set_fps(cap), UI.PRI, 80)
 		row.add_child(b)
 		_fps_btns.append(b)
-	v.add_child(_note("Vsync stays on. A cap stops a fast monitor from running the graphics card flat out."))
+	row = _row(v, "VSync")
+	for on in [true, false]:
+		var use: bool = on
+		var vb := UI.button("On" if use else "Off", func(): _set_vsync(use), UI.PRI, 80)
+		row.add_child(vb)
+		_vs_btns.append(vb)
+	v.add_child(_note("Unlimited turns vsync off and removes the cap, so the counter can go past the display. VSync on keeps 60, 120 or 144 tear-free when that cap is at or above the display. A cap below the refresh paces the frames with vsync off, so they stay evenly spaced."))
 
 	v.add_child(UI.header("Game"))
 	row = _row(v, "Fire-control lines at start")
@@ -106,6 +115,20 @@ func _build() -> void:
 		row.add_child(b)
 		_fc_btns.append(b)
 	v.add_child(_note("The B key switches them during a battle."))
+	row = _row(v, "Visible laser beams")
+	for on in [true, false]:
+		var shown: bool = on
+		var b := UI.button("On" if shown else "Off", func(): _set_beams(shown), UI.PRI, 80)
+		row.add_child(b)
+		_beam_btns.append(b)
+	v.add_child(_note("Off is the physical default: nothing in vacuum scatters a beam, so you see the spot and the emitter. The L key switches the beams on during a battle. On shows the Lance's own beam meshes, and a simple beam on the Dagger and the Mars frigate."))
+	row = _row(v, "Frame-time counter")
+	for on in [true, false]:
+		var shown: bool = on
+		var b := UI.button("On" if shown else "Off", func(): _set_fps_read(shown), UI.PRI, 80)
+		row.add_child(b)
+		_fpsread_btns.append(b)
+	v.add_child(_note("FPS, frame time and a 1% low. Off by default. F4 switches it during play."))
 	var chk := Check.new("Show the how-to-play briefing when the game starts", Settings.show_briefing)
 	chk.name = "BriefingCheck"
 	chk.toggled.connect(func(on: bool): Settings.set_show_briefing(on))
@@ -190,8 +213,16 @@ func _refresh() -> void:
 	_vol_txt.text = "MUTE" if Settings.volume == 0 else "%d %%" % Settings.volume
 	for i in _win_btns.size(): UI.set_active(_win_btns[i], i == Settings.window_mode)
 	for i in _fps_btns.size(): UI.set_active(_fps_btns[i], Settings.FPS_CAPS[i] == Settings.fps_cap)
+	if not _vs_btns.is_empty():
+		UI.set_active(_vs_btns[0], Settings.vsync)
+		UI.set_active(_vs_btns[1], not Settings.vsync)
 	UI.set_active(_fc_btns[0], Settings.fc_lines)
 	UI.set_active(_fc_btns[1], not Settings.fc_lines)
+	UI.set_active(_beam_btns[0], Settings.laser_beams)
+	UI.set_active(_beam_btns[1], not Settings.laser_beams)
+	if not _fpsread_btns.is_empty():
+		UI.set_active(_fpsread_btns[0], Settings.show_fps)
+		UI.set_active(_fpsread_btns[1], not Settings.show_fps)
 
 func _on_volume(v: float) -> void:
 	Settings.set_volume(int(v), false)      # live; saved when the drag ends
@@ -209,8 +240,20 @@ func _set_fps(c: int) -> void:
 	Settings.set_fps_cap(c)
 	_refresh()
 
+func _set_vsync(on: bool) -> void:
+	Settings.set_vsync(on)
+	_refresh()
+
 func _set_fc(on: bool) -> void:
 	Settings.set_fc_lines(on)
+	_refresh()
+
+func _set_beams(on: bool) -> void:
+	Settings.set_laser_beams(on)
+	_refresh()
+
+func _set_fps_read(on: bool) -> void:
+	Settings.set_show_fps(on)
 	_refresh()
 
 func _on_how_to_play() -> void:

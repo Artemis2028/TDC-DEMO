@@ -50,14 +50,17 @@ at least 20 points ahead of it. Up to v0.11.1 the balance was tuned AI against A
 
 ## Ship models
 
-The Earth ship is Rafael's Dagger concept model (`art/source/Dagger_Earth_Destroyer.blend`), converted for the
-game by `art/import_dagger.py` (turns it to game axes, makes the radiator wings foldable, adds the three laser
-barbettes, OMS blisters and coilgun, joins parts by material). The Mars ship is built in Blender by `art/build_ships.py` (pure script, no hand modelling) and exported to
-`game/models/earth.glb` and `game/models/mars.glb`; `art/earth.blend` and `art/mars.blend` are the same models for
-editing by hand. Rebuild with `blender --background --python art/build_ships.py -- --blend` (or `python
-art/build_ships.py --blend` with the `bpy` package). The game finds parts by name (Turret0..2, Muzzle0..2, Rad*,
-OMS_*, Gun_Coil/Gun_Rail, Sys0..5, Nozzle; mesh names starting N_/B_/A_ belong to the nose/body/aft sections),
-so keep those names if you edit a model by hand.
+Earth flies two hulls. The lasers-only Dagger is Rafael's concept model (`art/source/Dagger_Earth_Destroyer.blend`),
+converted for the game by `art/import_dagger.py` (turns it to game axes, makes the radiator wings foldable, adds the
+three laser barbettes, OMS blisters and coilgun, joins parts by material) and exported to `game/models/earth.glb`.
+The Lance, the Earth ship that carries the spinal coilgun, is the Arbiter TDC v18f hull (`art/source/arbiter-TDC_v18f.glb`).
+`art/prepare_arbiter.py` splits its static meshes into nose, body and aft for the armour view and writes
+`game/models/arbiter.glb`; the 13 animation clips are left on their original nodes. The Mars ship is built in Blender
+by `art/build_ships.py` (pure script, no hand modelling) and exported to `game/models/mars.glb`; `art/earth.blend` and
+`art/mars.blend` are the Dagger and Mars models for editing by hand. Rebuild Mars with `blender --background --python
+art/build_ships.py -- --blend` (or `python art/build_ships.py --blend` with the `bpy` package). The Dagger and Mars
+are found by name (Turret0..2, Muzzle0..2, Rad*, OMS_*, Gun_Coil/Gun_Rail, Sys0..5, Nozzle; mesh names starting
+N_/B_/A_ belong to the nose/body/aft sections), so keep those names if you edit a model by hand.
 
 ## Fonts
 

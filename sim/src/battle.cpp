@@ -162,6 +162,10 @@ static Ship make_ship(int id, const ShipClass& c, int side, bool player, Vec2 po
     for (int k = 0; k < kSec; ++k) s.panels[static_cast<std::size_t>(k)].fill(c.armor[static_cast<std::size_t>(k)]);
     s.crew = c.crew; s.ammo = c.ammo; s.dv_left = c.delta_v;
     if (c.gun == GunKind::None) s.health[static_cast<int>(Sys::Gun)] = 0;
+    // The coilgun's reload (gun_reload, 18 s) is the wait between rounds, and it starts at zero, so the first
+    // round used to leave with no charge. Hold the opening shot for the authored charge, 3 s. Later rounds still
+    // wait the full reload. The view plays CoilgunCharge across whichever wait is running. The railgun is unchanged.
+    if (c.gun == GunKind::Coilgun) s.gun_cooldown = 3.0;
     for (int k = 0; k < kTurrets; ++k) s.turret_aim[static_cast<std::size_t>(k)] = mount(k);
     return s;
 }
@@ -230,7 +234,9 @@ double Battle::rnd() {
     return static_cast<double>((rng_ * 2685821657736338717ull) >> 11) * (1.0 / 9007199254740992.0);
 }
 
-void Battle::log(int ship, const char* kind, std::string text, bool real) { events_.push_back({time_, ship, kind, std::move(text), real}); }
+void Battle::log(int ship, const char* kind, std::string text, bool real, std::string weapon, std::string section) {
+    events_.push_back({time_, ship, kind, std::move(text), real, std::move(weapon), std::move(section)});
+}
 
 double Battle::range(int a, int b) const { return (ships_[b].pos - ships_[a].pos).len(); }
 double Battle::closing(int a, int b) const {
@@ -387,6 +393,10 @@ void Battle::set_burn(int ship, Burn b, double throttle) {
     ships_[ship].burn = b; ships_[ship].throttle = clamp01(throttle);
     static const char* n[] = {"Drive off", "Burn toward enemy", "Burn away", "Burn left", "Burn right", "Kill relative velocity"};
     log(ship, "order", n[static_cast<int>(b)]);
+}
+void Battle::set_oms_strafe(int ship, int dir) {
+    // The main drive only pushes along the nose. Lateral pods are a separate order, so they can fire during a burn.
+    ships_[ship].oms_strafe = dir > 0 ? 1 : (dir < 0 ? -1 : 0);
 }
 void Battle::set_radiators(int ship, bool extended) {
     ships_[ship].radiators_extended = extended;
@@ -604,6 +614,15 @@ void Battle::move(Ship& s) {
         }
         s.dv_left = std::max(0.0, s.dv_left - a * kDt);
         s.vel = s.vel + dir * (a * kDt);
+        // A nose burn used to zero the OMS for the whole tick. The pods can fire at the same time: the player
+        // orders a strafe and it adds the (much smaller) lateral acceleration on top of the main drive.
+        if (s.main_firing && s.oms_strafe != 0 && s.dv_left > 0) {
+            double ao = s.cls.oms_accel * s.throttle;
+            s.oms_left = static_cast<double>(s.oms_strafe);
+            s.heat += s.cls.oms_heat * s.throttle * kDt;
+            s.dv_left = std::max(0.0, s.dv_left - ao * kDt);
+            s.vel = s.vel + left * (s.oms_left * ao * kDt);
+        }
     }
     s.pos = s.pos + s.vel * kDt;
     // Rolling turns the ship about its own axis only: the nose stays where the facing order points it.
@@ -735,7 +754,8 @@ void Battle::damage(Ship& t, Sys aim, double amount, bool laser, int from) {
     }
     sync_armor(t);
     if (before > 0 && panel <= 0) {
-        log(t.id, "burn-through", std::string(laser ? "Beam" : "Rounds") + " through the " + section_name(entry) + " armour (" + panel_name(pi) + ") of " + t.name);
+        log(t.id, "burn-through", std::string(laser ? "Beam" : "Rounds") + " through the " + section_name(entry) + " armour (" + panel_name(pi) + ") of " + t.name,
+            false, laser ? "beam" : "rounds", section_name(entry));
         // The flash of a breach can look like a kill: a chance of a false call on a system in that section.
         std::vector<int> inside;
         for (int s = 0; s < kSys; ++s) if (t.cls.placed[s] == entry && t.health[s] > 0) inside.push_back(s);

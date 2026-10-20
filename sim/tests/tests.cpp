@@ -333,6 +333,28 @@ TEST(drive_pushes_along_the_nose_oms_does_the_rest) {
     }
 }
 
+TEST(oms_strafe_stacks_on_the_main_drive) {
+    // Nothing physical stops the pods firing during a burn. A toward burn still uses the main drive; a left strafe
+    // adds oms_accel sideways and lights the pods. With no strafe order the pods stay dark, as before.
+    Battle b(1, 0);
+    auto& foe = const_cast<Ship&>(b.ships()[1]);
+    foe.weapons_free = false; foe.ai_controlled = false;
+    b.set_burn(0, Burn::Toward, 1.0);
+    b.set_oms_strafe(0, 1);
+    b.step();
+    const Ship& me = b.ships()[0];
+    CHECK(me.main_firing);
+    CHECK(std::fabs(me.oms_left - 1) < 1e-9 && std::fabs(me.oms_fwd) < 1e-9);
+    double expect = std::sqrt(me.cls.accel * me.cls.accel + me.cls.oms_accel * me.cls.oms_accel);
+    CHECK(std::fabs(me.vel.len() / Battle::kDt - expect) < 1e-6);
+    Battle plain(1, 0);
+    const_cast<Ship&>(plain.ships()[1]).weapons_free = false;
+    const_cast<Ship&>(plain.ships()[1]).ai_controlled = false;
+    plain.set_burn(0, Burn::Toward, 1.0);
+    plain.step();
+    CHECK(plain.ships()[0].main_firing && std::fabs(plain.ships()[0].oms_left) < 1e-9);
+}
+
 TEST(picked_turret_is_hit_when_exposed) {
     // Aiming at a named enemy turret puts laser damage on it if it faces the shooter; nose on, all three do.
     Battle b = placed(0);

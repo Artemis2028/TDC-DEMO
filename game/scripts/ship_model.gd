@@ -1,9 +1,11 @@
 class_name ShipModel
 extends Node3D
-## A ship as the game draws it: the hull is a model built in Blender (art/build_ships.py, exported to
-## models/earth.glb and models/mars.glb); this script finds the named parts in it and brings them to life:
-## turrets turn toward the target, radiators fold and glow with heat, OMS jets and the drive plume show the burn,
-## knocked-out turrets go dark, and the armour view tints each hull section by its condition.
+## A ship as the game draws it. Mars and the lasers-only Dagger come from models/mars.glb and models/earth.glb
+## (art/build_ships.py, art/import_dagger.py). The Lance, the Earth ship that carries the coilgun, is the Arbiter
+## TDC v18f hull (models/arbiter.glb): same axis convention, its own mesh, and the clips exported with it.
+## This script finds the named parts and brings them to life: turrets turn toward the target, radiators fold and
+## glow with heat, OMS jets and the drive plume show the burn, knocked-out turrets go dark, and the armour view
+## tints each hull section by its condition.
 ## The nose points along -Z, +X is the ship's right and +Y its top.
 
 var length := 160.0
@@ -43,6 +45,40 @@ static var _glow_tex: GradientTexture2D
 var gun_breech: Node3D                # barrel ends of the spinal gun (markers from the Blender scripts)
 var gun_muzzle: Node3D
 var _shots: Array = []               # firing effects in progress: [age s, wave ring, barrel glow, muzzle flash, jet, light]
+## Lance only. The Arbiter is a different hull from the Dagger, so it keeps its own rig and the glTF clips.
+var arbiter := false
+var _arbiter_rig: Array = []         # per sim turret: [yaw, pitch, rest yaw, rest pitch, beam dir in yaw space, head materials, alpha, beta]
+var _rad_player: AnimationPlayer
+var _drive_player: AnimationPlayer
+var _gun_player: AnimationPlayer
+var _drive_node: Node3D
+var _drive_clip := ""
+var _oms_jets: Array = []            # [node, exhaust direction in ship space, station "F"/"A"]
+var _gun_fx: Array = []              # coil glows and muzzle flare: the charge clip and the firing clip both drive them
+var _muzzle_flash: Node3D            # muzzle flash, shown only for the firing clip
+var _gun_fx_left := 0.0
+var _charge_span := 0.0              # length of the wait the charge clip is currently playing across
+var _charge_u := -1.0                # last charge-clip fraction applied; a repeat seek is skipped
+var _coil_base := {}                  # Coilgun_Coil_* node -> the scale the charge clip just wrote
+var _sensor: Array = []              # [yaw, pitch, rest yaw, rest pitch, look dir in yaw space, alpha, beta]
+## Rotary point-defence feeds. TurretTrack bends RT0N_Flex_01..07 with the head, but that clip is not played:
+## live aim turns the yaw and pitch. Each bone's pose is the rest pose plus a linear function of those two
+## angles, fitted from the clip, and both the head and the hose stop at the clip's arc so the hose cannot
+## be left straight while the head swings away.
+var _feeds: Array = []
+var _laser_beams: Array = []         # per sim turret: the model's beam node, or a simple beam on the Dagger and Mars
+var _laser_player: AnimationPlayer
+var _gimbal_ready := false           # first aim snaps; easing starts from a pose that already points
+var beam_fx := false                 # player option: draw the beams. Off by default (a beam in vacuum is not visible)
+## LaserFire's scale keys sit at about 1e-5 between pulses (the beams were exported hidden) and at 1 during a
+## pulse. A firing turret holds at least this fraction of that full size, so the beam stays visible for the whole
+## shot and the clip's pulses still thicken it. Hiding the option puts the nodes back to the authored scale.
+const LASER_BEAM_HOLD := 0.85
+const LASER_BEAM_HIDDEN := 0.00001
+## Armoured nose tip to the drive throat in the authored file. Scaled up to the Earth length both classes share.
+const ARBITER_NATIVE_LENGTH := 161.36
+## Sim turret 0, 1, 2 (mounts at 45, 135, 315 deg) -> the visual head whose mount is nearest: dorsal, port, starboard.
+const ARBITER_TURRET_VISUAL := [2, 1, 3]
 ## Gun firing effect timing (real seconds, not battle time, so it reads the same at any time speed).
 const GUN_WAVE_TIME := 0.16           # the light running up the coils, breech to muzzle
 const GUN_FADE_TIME := 0.9            # barrel afterglow and muzzle flash fading out
@@ -51,50 +87,38 @@ const OMS_FWD := 0.10      # OMS stations (fractions of the length from the nose
 const OMS_AFT := 0.765
 
 ## Build the ship. gun_kind: 0 none, 1 railgun, 2 coilgun.
+## Earth has two hulls: the Dagger (lasers only) keeps models/earth.glb; the Lance (coilgun) is the Arbiter.
+func _ready() -> void:
+	# Godot re-renders a reflection probe whenever its transform changes. Freezing it at the
+	# spawn pose keeps the capture to a handful of faces at load, not one cubemap a frame.
+	var probe := get_node_or_null("HullReflection") as ReflectionProbe
+	if probe:
+		probe.top_level = true
+
+## One cubemap for the copper mirrors. Shadows off, captured from above the hull so the
+## camera is not inside the mesh. The box rides with this ship only until _ready freezes it,
+## and it does not reach the other ship at the start of a fight.
+func _add_arbiter_reflection() -> void:
+	var probe := ReflectionProbe.new()
+	probe.name = "HullReflection"
+	probe.update_mode = ReflectionProbe.UPDATE_ONCE
+	probe.enable_shadows = false
+	probe.interior = false
+	probe.box_projection = false
+	probe.intensity = 1.0
+	probe.size = Vector3(800.0, 300.0, 800.0)
+	probe.origin_offset = Vector3(0.0, 36.0, 0.0)
+	add_child(probe)
+
 func build(is_mars: bool, gun_kind: int) -> void:
 	mars = is_mars
 	length = 130.0 if mars else 193.6
+	if not mars and gun_kind == 2:
+		_build_arbiter()
+		return
 	var root: Node3D = (load("res://models/mars.glb" if mars else "res://models/earth.glb") as PackedScene).instantiate()
 	add_child(root)
-	var grid := _grid_texture()
-	# Materials: this ship gets its own copies so tinting one ship never touches the other. One copy per source
-	# material and role (section, radiator panel), shared by every surface that uses it: far fewer materials to
-	# update and to switch between when drawing. Turret domes keep one each, since a dead turret's dome is scorched.
-	var copies := {}
-	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
-		var sec := -1
-		var n := String(mi.name)
-		if n.begins_with("N_"): sec = 0
-		elif n.begins_with("B_"): sec = 1
-		elif n.begins_with("A_"): sec = 2
-		var radiator := _under_rad_pivot(mi)
-		for si in mi.mesh.get_surface_count():
-			var src := mi.get_active_material(si) as StandardMaterial3D
-			if src == null: continue
-			var rad_panel := radiator and n.begins_with("Rad") and n.length() < 14
-			var key := "%d/%d/%s/%s" % [src.get_instance_id(), sec, radiator, n if n.begins_with("B_dome") else ("P" if rad_panel else "")]
-			if copies.has(key):
-				mi.set_surface_override_material(si, copies[key])
-				continue
-			var m := src.duplicate() as StandardMaterial3D
-			copies[key] = m
-			if radiator:
-				if n.begins_with("Rad") and n.length() < 14:
-					m.albedo_texture = grid           # generated panels carry no texture of their own
-					m.uv1_scale = Vector3(3, 2, 1)
-				# fins (dark surfaces) glow with heat; frames and brackets don't
-				if m.albedo_color.get_luminance() < 0.25 or n.begins_with("Rad") and n.length() < 14:
-					m.emission_enabled = true
-					m.emission = Color(0.55, 0.12, 0.03)
-					m.emission_energy_multiplier = 0.0
-					radiators.append([m, m.albedo_color])
-			elif sec >= 0 and not m.emission_enabled:
-				# Emission stays switched on (black in the normal view): toggling it would compile a new shader
-				# variant, a hitch, the first time the armour view opens.
-				m.emission_enabled = true
-				m.emission = Color.BLACK
-				sec_parts[sec].append([m, m.albedo_color])
-			mi.set_surface_override_material(si, m)
+	_bind_hull_materials(root, _grid_texture())
 	for p: Node3D in root.find_children("RadPivot*", "Node3D", true, false):
 		rad_pivots.append(p)
 	# turrets
@@ -245,8 +269,16 @@ func _show_oms(exhaust: Vector3) -> void:
 ## Base rotation by az then head tilt by el sends the emitter to (-sin el cos az, -sin el sin az, -cos el) in the
 ## base's rest frame; this solves that for az and el. (az, el) and (az + 180, -el) point the same way: the one
 ## nearer the last azimuth is used, and near straight-out the azimuth is held, so the base never spins round.
-func aim(aims: Array) -> void:
+func aim(aims: Array, delta := -1.0) -> void:
 	if not is_inside_tree(): return
+	# The sim steps turret aim at 10 Hz. Follow it across the frames in between. The first sample snaps, and so
+	# does a still (delta < 0): easing from the rest pose was a long swing on the first frames of a battle.
+	var snap := delta < 0.0 or not _gimbal_ready
+	var blend := 1.0 if snap else clampf(1.0 - exp(-delta / 0.045), 0.0, 1.0)
+	_gimbal_ready = true
+	if arbiter:
+		_aim_arbiter(aims, blend)
+		return
 	for k in mini(turrets.size(), aims.size()):
 		var t: Array = turrets[k]
 		var head: Node3D = t[0]
@@ -262,44 +294,53 @@ func aim(aims: Array) -> void:
 			az = az0 + PI * roundf((az - az0) / PI)             # the equivalent solution nearest the last one
 		var el := atan2(-(d.x * cos(az) + d.y * sin(az)), -d.z)
 		t[8] = az
-		base.basis = Basis(t[6]) * Basis(Vector3(0, 0, 1), az)
-		head.basis = Basis(t[7]) * Basis(Vector3(0, 1, 0), el)
+		var want_base := Basis(t[6]) * Basis(Vector3(0, 0, 1), az)
+		var want_head := Basis(t[7]) * Basis(Vector3(0, 1, 0), el)
+		base.basis = want_base if blend >= 1.0 else base.basis.slerp(want_base, blend)
+		head.basis = want_head if blend >= 1.0 else head.basis.slerp(want_head, blend)
 
 ## The spinal gun fires: the coils dump one after another, so a ring of light runs up the barrel from the breech to the
 ## muzzle, the barrel glows behind it and cools; at the muzzle a flash and a short plasma jet (the armature's
 ## vaporised trailing edge), and a brief light that catches the hull. The round itself is drawn by main.gd.
 func fire_gun() -> void:
+	if arbiter:
+		_fire_arbiter_gun()
 	if gun_breech == null or gun_muzzle == null: return
+	# The Lance already carries the coil wave in the model. The shared muzzle light stays small (the old 70 m
+	# light at energy 6 whited out the hull). The ring that runs the barrel is only a little past the bloom
+	# threshold, so the halo stays on the ring.
+	var tame := arbiter
 	var colour := Color(1.0, 0.55, 0.25) if mars else Color(0.55, 0.8, 1.0)
 	var wave := MeshInstance3D.new()
 	var tm := TorusMesh.new()
-	tm.inner_radius = 0.9
-	tm.outer_radius = 1.6
+	tm.inner_radius = 0.55 if tame else 0.9
+	tm.outer_radius = 0.95 if tame else 1.6
 	wave.mesh = tm
-	wave.material_override = _glow_mat(colour * 6.0)
+	wave.material_override = _glow_mat(colour * (1.8 if tame else 6.0))
 	var glow := MeshInstance3D.new()
 	var cm := CylinderMesh.new()
-	cm.top_radius = 1.15
-	cm.bottom_radius = 1.15
+	cm.top_radius = 0.32 if tame else 1.15
+	cm.bottom_radius = 0.32 if tame else 1.15
 	cm.height = 1.0
 	glow.mesh = cm
-	glow.material_override = _glow_mat(colour * 2.5)
+	glow.material_override = _glow_mat(colour * (0.4 if tame else 2.5))
 	var flash := MeshInstance3D.new()
 	var sm := SphereMesh.new()
-	sm.radius = 1.0
-	sm.height = 2.0
+	sm.radius = 0.35 if tame else 1.0
+	sm.height = 0.7 if tame else 2.0
 	flash.mesh = sm
-	flash.material_override = _glow_mat(Color(1, 0.95, 0.85) * 3.0)
+	flash.material_override = _glow_mat(Color(1, 0.95, 0.85) * (0.5 if tame else 3.0))
 	var jet := MeshInstance3D.new()
 	var jm := CylinderMesh.new()
-	jm.top_radius = 0.2
-	jm.bottom_radius = 2.2
+	jm.top_radius = 0.08 if tame else 0.2
+	jm.bottom_radius = 0.4 if tame else 2.2
 	jm.height = 1.0
 	jet.mesh = jm
-	jet.material_override = _glow_mat(colour * 4.0)
+	jet.material_override = _glow_mat(colour * (0.55 if tame else 4.0))
 	var light := OmniLight3D.new()
-	light.light_color = colour.lerp(Color.WHITE, 0.5)
-	light.omni_range = 70.0
+	light.light_color = colour.lerp(Color.WHITE, 0.35 if tame else 0.5)
+	light.omni_range = 12.0 if tame else 70.0
+	light.omni_attenuation = 2.6 if tame else 1.0
 	light.shadow_enabled = false
 	for n in [wave, glow, flash, jet]:
 		(n as GeometryInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -319,6 +360,10 @@ func _glow_mat(c: Color) -> StandardMaterial3D:
 
 ## Advance the firing effects (real time).
 func _process(delta: float) -> void:
+	if arbiter and _gun_fx_left > 0.0:
+		_gun_fx_left -= delta
+		if _gun_fx_left <= 0.0 and _muzzle_flash:
+			_muzzle_flash.visible = false
 	if _shots.is_empty(): return
 	var a := to_local(gun_breech.global_position)
 	var b := to_local(gun_muzzle.global_position)
@@ -341,16 +386,20 @@ func _process(delta: float) -> void:
 		var flash: MeshInstance3D = sh[3]
 		var ft := clampf((t - GUN_WAVE_TIME) / 0.35, 0.0, 1.0)        # flash: grows fast, fades
 		flash.visible = t >= GUN_WAVE_TIME
-		flash.transform = Transform3D(Basis.from_scale(Vector3.ONE * (1.0 + 3.0 * sqrt(ft))), b)
+		var fg := (0.45 + 0.55 * sqrt(ft)) if arbiter else (1.0 + 3.0 * sqrt(ft))
+		flash.transform = Transform3D(Basis.from_scale(Vector3.ONE * fg), b)
 		_set_alpha(flash, 1.0 - ft)
 		var jet: MeshInstance3D = sh[4]
-		var jl := 3.0 + 18.0 * sqrt(ft)                               # plasma jet streams forward and thins out
+		var jl := (1.1 + 3.2 * sqrt(ft)) if arbiter else (3.0 + 18.0 * sqrt(ft))
 		jet.visible = t >= GUN_WAVE_TIME
-		jet.transform = Transform3D(basis_y * Basis.from_scale(Vector3(1.0 + ft, jl, 1.0 + ft)), b + axis * jl * 0.5)
+		var jr := 0.35 if arbiter else (1.0 + ft)
+		jet.transform = Transform3D(basis_y * Basis.from_scale(Vector3(jr, jl, jr)), b + axis * jl * 0.5)
 		_set_alpha(jet, 0.8 * (1.0 - ft))
 		var light: OmniLight3D = sh[5]
 		light.position = b
-		light.light_energy = (6.0 * (1.0 - ft) if t >= GUN_WAVE_TIME else 2.0 * run)
+		var flash_e := 0.35 if arbiter else 6.0
+		var run_e := 0.15 if arbiter else 2.0
+		light.light_energy = (flash_e * (1.0 - ft) if t >= GUN_WAVE_TIME else run_e * run)
 		if t > GUN_WAVE_TIME + GUN_FADE_TIME:
 			done.append(sh)
 	for sh in done:
@@ -409,11 +458,53 @@ func _build_beam_glows() -> void:
 		(e.material_override as StandardMaterial3D).albedo_color = (Color(1.0, 0.7, 0.45) if mars else Color(0.7, 0.85, 1.0)) * 1.4
 		(t[1] as Node3D).add_child(e)
 		emitters.append(e)
+	if arbiter: return
+	# No beam mesh on these hulls. A short unshaded streak along the emitter (the head's -Z) stands in when the
+	# player asks to see laser fire. It stays hidden until then.
+	var col := (Color(1.0, 0.45, 0.18) if mars else Color(0.55, 0.82, 1.0)) * 2.0
+	for t in turrets:
+		var head: Node3D = t[0]
+		var beam := MeshInstance3D.new()
+		var cyl := CylinderMesh.new()
+		cyl.top_radius = 0.4
+		cyl.bottom_radius = 1.5
+		cyl.height = 280.0
+		beam.mesh = cyl
+		var m := _glow_mat(col)
+		m.no_depth_test = false
+		beam.material_override = m
+		beam.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		# CylinderMesh runs along local +Y. A -90 deg pitch sends that along the head's -Z, out of the muzzle.
+		beam.transform = Transform3D(Basis(Vector3.RIGHT, -PI * 0.5), Vector3(0, 0, -cyl.height * 0.5))
+		beam.visible = false
+		head.add_child(beam)
+		_laser_beams.append(beam)
 
-## Emitter glows: on while that turret fires.
+## Emitter glows: on while that turret fires. With the beam option on, that turret also shows its beam.
 func show_emitters(firing: Array) -> void:
 	for k in mini(emitters.size(), firing.size()):
 		(emitters[k] as MeshInstance3D).visible = bool(firing[k])
+	var any := false
+	for k in _laser_beams.size():
+		var on := beam_fx and k < firing.size() and bool(firing[k])
+		var beam: Node3D = _laser_beams[k]
+		if beam == null: continue
+		beam.visible = on
+		any = any or on
+	if not arbiter: return
+	# LaserFire scales all three beams together (a pulse on top of a beam that stays visible). A turret that is
+	# not firing stays hidden. The option off puts the nodes back to the authored near-zero scale.
+	if _laser_player and _laser_player.has_animation("LaserFire"):
+		if any:
+			if not _laser_player.is_playing():
+				_laser_player.play("LaserFire")
+		elif _laser_player.is_playing():
+			_laser_player.stop()
+	if not any:
+		for beam in _laser_beams:
+			if beam == null: continue
+			beam.visible = false
+			beam.scale = Vector3.ONE * LASER_BEAM_HIDDEN
 
 ## Where a beam aimed at system sys (turret k for the lasers) lands on this hull, seen from the shooter: on the
 ## skin beside the system, on the side facing the shooter (or the end cap when the shooter is nearly on the axis).
@@ -526,29 +617,32 @@ func show_state(s: Dictionary, delta: float) -> void:
 	_rad_open = move_toward(_rad_open, target, delta * 0.8)
 	var health: PackedFloat64Array = s["health"]
 	var glow: float = clamp((float(s["heat"]) - 30.0) / 70.0, 0.0, 1.0) * 1.5
-	if _rad_open != _rad_shown:
-		_rad_shown = _rad_open
-		for p: Node3D in rad_pivots:
-			p.scale = Vector3(max(0.04, _rad_open), 1, 1)
+	if arbiter:
+		_show_arbiter(s, glow)
+	else:
+		if _rad_open != _rad_shown:
+			_rad_shown = _rad_open
+			for p: Node3D in rad_pivots:
+				p.scale = Vector3(max(0.04, _rad_open), 1, 1)
+		plume.visible = s["burning"]
+		if plume.visible:
+			var th: float = clampf(float(s["throttle"]), 0.0, 1.0)
+			plume.scale = Vector3(1, 1, lerpf(DRIVE_PLUME_MIN, DRIVE_PLUME_MAX, th))
+			plume_mat.set_shader_parameter("strength", lerpf(0.9, 3.2, th) * (0.94 + 0.06 * sin(Time.get_ticks_msec() * 0.03)))
+		# OMS: the push in the battle plane, from (forward, left) in ship axes, turned into this model's own axes
+		var oms: Vector2 = s["oms"]
+		var h: float = s["heading"]
+		var push_sim := Vector2(cos(h), sin(h)) * oms.x + Vector2(-sin(h), cos(h)) * oms.y
+		var push_world := Vector3(push_sim.x, 0, -push_sim.y)
+		_show_oms(global_transform.basis.inverse() * (-push_world) if oms.length() > 0.01 and is_inside_tree() else Vector3.ZERO)
 	var rad_dead: bool = health[4] <= 0
 	if absf(glow - _glow_shown) > 0.004 or rad_dead != _rad_dead_shown:
 		_glow_shown = glow
 		_rad_dead_shown = rad_dead
 		for rd in radiators:
-			var m: StandardMaterial3D = rd[0]
-			m.emission_energy_multiplier = glow
-			m.albedo_color = rd[1] if not rad_dead else Color(0.3, 0.06, 0.04)
-	plume.visible = s["burning"]
-	if plume.visible:
-		var th: float = clampf(float(s["throttle"]), 0.0, 1.0)
-		plume.scale = Vector3(1, 1, lerpf(DRIVE_PLUME_MIN, DRIVE_PLUME_MAX, th))
-		plume_mat.set_shader_parameter("strength", lerpf(0.9, 3.2, th) * (0.94 + 0.06 * sin(Time.get_ticks_msec() * 0.03)))
-	# OMS: the push in the battle plane, from (forward, left) in ship axes, turned into this model's own axes
-	var oms: Vector2 = s["oms"]
-	var h: float = s["heading"]
-	var push_sim := Vector2(cos(h), sin(h)) * oms.x + Vector2(-sin(h), cos(h)) * oms.y
-	var push_world := Vector3(push_sim.x, 0, -push_sim.y)
-	_show_oms(global_transform.basis.inverse() * (-push_world) if oms.length() > 0.01 and is_inside_tree() else Vector3.ZERO)
+			var rm: StandardMaterial3D = rd[0]
+			rm.emission_energy_multiplier = glow
+			rm.albedo_color = rd[1] if not rad_dead else Color(0.3, 0.06, 0.04)
 	# knocked-out turrets: lens gone, dome scorched
 	var thp: PackedFloat64Array = s["turret_hp"]
 	for k in turrets.size():
@@ -558,3 +652,774 @@ func show_state(s: Dictionary, delta: float) -> void:
 		if view_mode == 0:
 			var dc: Color = Color(0.22, 0.08, 0.05) if dead else turrets[k][4]
 			if dm.albedo_color != dc: dm.albedo_color = dc
+		if arbiter and k < _arbiter_rig.size() and view_mode == 0:
+			for part in _arbiter_rig[k][5]:
+				var hm: StandardMaterial3D = part[0]
+				var hc: Color = Color(0.22, 0.08, 0.05) if dead else part[1]
+				if hm.albedo_color != hc: hm.albedo_color = hc
+
+# ------------------------------------------------------------------ materials
+
+## Copies of the hull materials, one per source material and role, so tinting this ship never touches another.
+## Section meshes are named N_ / B_ / A_. Radiator fins under a RadPivot glow with heat.
+func _bind_hull_materials(root: Node3D, grid: ImageTexture) -> void:
+	var copies := {}
+	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
+		var sec := -1
+		var n := String(mi.name)
+		if n.begins_with("N_"): sec = 0
+		elif n.begins_with("B_"): sec = 1
+		elif n.begins_with("A_"): sec = 2
+		var radiator := _under_rad_pivot(mi)
+		for si in mi.mesh.get_surface_count():
+			var src := mi.get_active_material(si) as StandardMaterial3D
+			if src == null: continue
+			var rad_panel := radiator and n.begins_with("Rad") and n.length() < 14
+			var key := "%d/%d/%s/%s" % [src.get_instance_id(), sec, radiator, n if n.begins_with("B_dome") else ("P" if rad_panel else "")]
+			if copies.has(key):
+				mi.set_surface_override_material(si, copies[key])
+				continue
+			var m := src.duplicate() as StandardMaterial3D
+			copies[key] = m
+			if radiator:
+				if n.begins_with("Rad") and n.length() < 14:
+					m.albedo_texture = grid           # generated panels carry no texture of their own
+					m.uv1_scale = Vector3(3, 2, 1)
+				# fins (dark surfaces) glow with heat; frames and brackets don't
+				if m.albedo_color.get_luminance() < 0.25 or n.begins_with("Rad") and n.length() < 14:
+					m.emission_enabled = true
+					m.emission = Color(0.55, 0.12, 0.03)
+					m.emission_energy_multiplier = 0.0
+					radiators.append([m, m.albedo_color])
+			elif sec >= 0 and not m.emission_enabled:
+				# Emission stays switched on (black in the normal view): toggling it would compile a new shader
+				# variant, a hitch, the first time the armour view opens.
+				m.emission_enabled = true
+				m.emission = Color.BLACK
+				sec_parts[sec].append([m, m.albedo_color])
+			mi.set_surface_override_material(si, m)
+
+# ------------------------------------------------------------------ Arbiter (Lance)
+
+## The coilgun Earth's hull. Native metres are a little shorter than the Dagger, so the root is scaled to the
+## Earth length the camera, nameplate and sensor view already assume. Nose, origin and axes already match.
+func _build_arbiter() -> void:
+	arbiter = true
+	var root: Node3D = (load("res://models/arbiter.glb") as PackedScene).instantiate()
+	root.scale = Vector3.ONE * (length / ARBITER_NATIVE_LENGTH)
+	add_child(root)
+	_bind_hull_materials(root, _grid_texture())
+	_bind_arbiter_radiators(root)
+	_build_arbiter_turrets(root)
+	_build_arbiter_sensor(root)
+	_build_arbiter_markers(root)
+	_quiet_arbiter_shadows(root)
+	_build_arbiter_oms(root)
+	_build_arbiter_anims(root)
+	_bind_ammo_feeds()
+	_tame_arbiter_emission(root)
+	_double_side_housings(root)
+	_add_arbiter_reflection()
+	var far := root.find_child("Target_Track_Point", true, false) as Node3D
+	if far: far.position = Vector3.ZERO
+	# Hull size from the section meshes, in this node's space (the root scale included).
+	var box := AABB()
+	var first := true
+	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
+		var nm := String(mi.name)
+		# The pressure hull only. Mounts, doors and the point-defence lattices sit outside it and would
+		# push a beam's hot spot off the skin.
+		if nm != "N_hull" and nm != "B_hull" and nm != "A_hull": continue
+		var bb: AABB = _xform_under(mi) * mi.get_aabb()
+		box = bb if first else box.merge(bb)
+		first = false
+	if not first:
+		hull_r = 0.5 * minf(box.size.x, box.size.y)
+		hull_z = Vector2(box.position.z, box.end.z)
+	_build_beam_glows()
+	# The Arbiter brings its own plume. This dummy keeps the Dagger path's field from being read unready.
+	plume = MeshInstance3D.new()
+	plume.visible = false
+	add_child(plume)
+	plume_mat = ShaderMaterial.new()
+
+## Transform of n in this ship's space, including the scaled model root. Valid before the ship enters the tree.
+func _xform_under(n: Node3D) -> Transform3D:
+	var x := Transform3D.IDENTITY
+	var p: Node = n
+	while p != null and p != self:
+		x = (p as Node3D).transform * x
+		p = p.get_parent()
+	return x
+
+## Dark radiator skins glow with heat, the same way the Dagger's fins do. One shared copy per source material.
+func _bind_arbiter_radiators(root: Node3D) -> void:
+	var copies := {}
+	for mi: MeshInstance3D in root.find_children("Radiator_*Geo", "MeshInstance3D", true, false):
+		for si in mi.mesh.get_surface_count():
+			var src := mi.get_active_material(si) as StandardMaterial3D
+			if src == null: continue
+			var id := src.get_instance_id()
+			if copies.has(id):
+				mi.set_surface_override_material(si, copies[id])
+				continue
+			var m := src.duplicate() as StandardMaterial3D
+			copies[id] = m
+			mi.set_surface_override_material(si, m)
+			if m.albedo_color.get_luminance() < 0.25:
+				m.emission_enabled = true
+				m.emission = Color(0.55, 0.12, 0.03)
+				m.emission_energy_multiplier = 0.0
+				radiators.append([m, m.albedo_color])
+
+## Three laser heads. Each sim turret drives the visual mount nearest its arc, and a marker at the aperture
+## (the beam mesh itself stays hidden: a beam in vacuum is not drawn).
+func _build_arbiter_turrets(root: Node3D) -> void:
+	for k in 3:
+		var vis: int = ARBITER_TURRET_VISUAL[k]
+		var tag := "%02d" % vis
+		var yaw := root.find_child("Turret_%s_Yaw" % tag, true, false) as Node3D
+		var pitch := root.find_child("Turret_%s_Pitch" % tag, true, false) as Node3D
+		var beam := root.find_child("Turret_%s_LaserBeam" % tag, true, false) as Node3D
+		if yaw == null or pitch == null or beam == null:
+			push_error("Arbiter turret %s is missing a yaw, pitch or beam node" % tag)
+			continue
+		beam.visible = false
+		_brighten_laser_beam(beam)
+		var muzzle := Marker3D.new()
+		muzzle.name = "Muzzle%d" % k
+		muzzle.position = beam.position
+		pitch.add_child(muzzle)
+		var b0: Vector3 = (pitch.transform.basis * (beam.transform.basis * Vector3.UP)).normalized()
+		var mats: Array = []
+		var geo := root.find_child("Turret_%s_Pitch_Geo" % tag, true, false) as MeshInstance3D
+		if geo:
+			for si in geo.mesh.get_surface_count():
+				var src := geo.get_active_material(si) as StandardMaterial3D
+				if src == null: continue
+				var m := src.duplicate() as StandardMaterial3D
+				geo.set_surface_override_material(si, m)
+				mats.append([m, m.albedo_color])
+		# Stand-in for the Dagger's lens mesh, so the shared dead-turret path has a node to hide.
+		# It has to live in the tree: an orphaned MeshInstance3D leaks its cull instance on quit.
+		var lens := MeshInstance3D.new()
+		lens.name = "Lens%d" % k
+		pitch.add_child(lens)
+		var dummy := StandardMaterial3D.new()
+		_arbiter_rig.append([yaw, pitch, yaw.quaternion, pitch.quaternion, b0, mats, 0.0, 0.0])
+		turrets.append([pitch, muzzle, lens, dummy, dummy.albedo_color, yaw, yaw.basis, pitch.basis, 0.0])
+		_laser_beams.append(beam)
+
+## Dorsal sensor gimbal. The lens is on the pitch node's local +X, so that is the look direction at rest.
+func _build_arbiter_sensor(root: Node3D) -> void:
+	var yaw := root.find_child("Sensor_01_Yaw", true, false) as Node3D
+	var pitch := root.find_child("Sensor_01_Pitch", true, false) as Node3D
+	if yaw == null or pitch == null:
+		push_error("Arbiter sensor gimbal is missing a yaw or pitch node")
+		return
+	var b0: Vector3 = (pitch.transform.basis * Vector3.RIGHT).normalized()
+	_sensor = [yaw, pitch, yaw.quaternion, pitch.quaternion, b0, 0.0, 0.0]
+
+## Lids, lattices and the little rotary feeds are a few triangles each and still cost a shadow draw in every
+## cascade. The hull, the radiator wings and the laser heads keep their shadows.
+func _quiet_arbiter_shadows(root: Node3D) -> void:
+	for mi in root.find_children("*", "MeshInstance3D", true, false):
+		var n := String(mi.name)
+		if "Lid_" in n or "PointDefence" in n or "AmmoFeed" in n or "LaserBeam" in n or "Glow" in n or "Plume" in n or "Muzzle" in n or "Projectile" in n:
+			(mi as GeometryInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+## Reference points the HUD, the hot spot and the firing effect already look up by name.
+func _build_arbiter_markers(root: Node3D) -> void:
+	var recoil := root.find_child("Coilgun_A093_Barrel_Recoil", true, false) as Node3D
+	var flash := root.find_child("Coilgun_MuzzleFlash", true, false) as Node3D
+	gun_breech = recoil
+	gun_muzzle = flash
+	# Drive, Laser, Gun, Sensors, Radiators, Crew, in authored metres (the root scale carries them out).
+	var places := [Vector3(0, 0, 74), Vector3(0, 14, -29), Vector3(0, -12.4, -36),
+		Vector3(0, 13, 23), Vector3(0, 22, 50), Vector3(0, 0, -55)]
+	for i in places.size():
+		var m := Marker3D.new()
+		m.name = "Sys%d" % i
+		m.position = places[i]
+		root.add_child(m)
+		sys_nodes.append(m)
+	for n in root.find_children("Coilgun_Coil_*_Glow", "Node3D", true, false):
+		if String(n.name).ends_with("_Geo"): continue
+		n.visible = false
+		n.scale = Vector3.ZERO
+		# The discs are small. A colour just past the bloom threshold (1.6) halos the coil and not the frame.
+		# The old treatment was these same discs at several times this brightness, widened, plus a huge light.
+		_brighten_fx(n, Color(0.7, 1.15, 2.15, 1.0))
+		_gun_fx.append(n)
+	var flare := root.find_child("Coilgun_MuzzleFlare", true, false) as Node3D
+	if flare:
+		flare.visible = false
+		_brighten_fx(flare, Color(0.85, 1.15, 2.0, 0.8))
+		_gun_fx.append(flare)
+	_muzzle_flash = root.find_child("Coilgun_MuzzleFlash", true, false) as Node3D
+	if _muzzle_flash:
+		_muzzle_flash.visible = false
+	var shot := root.find_child("Coilgun_Projectile", true, false) as Node3D
+	if shot: shot.visible = false
+	_drive_node = root.find_child("MainDrive_A001-A004_Plume", true, false) as Node3D
+	if _drive_node:
+		_drive_node.visible = false
+
+## The model's own bells. Radial and tangent plumes point across the hull; fore and aft stations stand in for a
+## burn along the ship, the same stations the Dagger lights. OMSBurn is not played: each bell is authored at
+## scale ~0 (A010's radial included) and scaled to 1 here when that pod's station is firing.
+func _build_arbiter_oms(root: Node3D) -> void:
+	var clusters := [
+		["OMS_A010_Fore_Bottom", "F"], ["OMS_A011_Fore_Port", "F"], ["OMS_A012_Fore_Stbd", "F"], ["OMS_A013_Fore_Top", "F"],
+		["OMS_A006_Aft_Bottom", "A"], ["OMS_A007_Aft_Port", "A"], ["OMS_A008_Aft_Stbd", "A"], ["OMS_A009_Aft_Top", "A"],
+	]
+	for c in clusters:
+		for kind in ["Radial", "TangentA", "TangentB"]:
+			var n := root.find_child("%s_Plume_%s" % [c[0], kind], true, false) as Node3D
+			if n == null: continue
+			var dir := (_xform_under(n).basis * Vector3.UP).normalized()
+			n.visible = false
+			n.scale = Vector3.ZERO
+			_oms_jets.append([n, dir, c[1]])
+
+func _share_player(src: AnimationPlayer, pname: String) -> AnimationPlayer:
+	var p := AnimationPlayer.new()
+	p.name = pname
+	src.get_parent().add_child(p)
+	p.root_node = src.root_node
+	var lib := AnimationLibrary.new()
+	for lname in src.get_animation_library_list():
+		var slib := src.get_animation_library(lname)
+		for aname in slib.get_animation_list():
+			lib.add_animation(aname, slib.get_animation(aname).duplicate())
+	p.add_animation_library("", lib)
+	return p
+
+## Which node names a clip is allowed to move. Godot's glTF import (tracks "if present for all") inserts one
+## rest key for every animated node into every clip. Playing the drive was therefore pinning the turrets, the
+## sensor and the radiator wings at the rest pose: wings stayed out while the panel said stowed, and a closing
+## burn froze the lasers off the target. Each clip keeps only its own nodes.
+func _clip_keeps(aname: String) -> PackedStringArray:
+	if aname.begins_with("Coilgun"): return PackedStringArray(["Coilgun_"])
+	if aname.begins_with("MainDrive"): return PackedStringArray(["MainDrive_"])
+	if aname.begins_with("OMS"): return PackedStringArray(["OMS_"])
+	if aname.begins_with("Radiator"): return PackedStringArray(["Radiator_"])
+	if aname.begins_with("Laser"): return PackedStringArray(["LaserBeam"])
+	if aname.begins_with("VLS"): return PackedStringArray(["VLS_"])
+	# The hose bones import as Skeleton3D:RT0N_Flex under RotaryTurret_. "Turret_" matches that path
+	# today. "Flex" and "RT0" keep the channels if a later import shortens the path. No other clip lists
+	# them, so the rest keys Godot inserts for those bones are stripped everywhere else.
+	if aname.begins_with("Turret") or aname.begins_with("Rotary"):
+		return PackedStringArray(["Turret_", "Flex", "RT0"])
+	if aname.begins_with("Sensor"): return PackedStringArray(["Sensor_"])
+	return PackedStringArray()
+
+func _isolate_clip_tracks(anim: Animation, needles: PackedStringArray) -> void:
+	if needles.is_empty(): return
+	for i in range(anim.get_track_count() - 1, -1, -1):
+		var path := str(anim.track_get_path(i))
+		var keep := false
+		for needle in needles:
+			if needle in path:
+				keep = true
+				break
+		if not keep:
+			anim.remove_track(i)
+
+## Clips stay on the imported player. Radiators are posed from RadiatorDeploy (0 stowed, 1 deployed). The drive
+## and the gun each have their own player so a shot does not cancel the wings.
+func _build_arbiter_anims(root: Node3D) -> void:
+	var ap := root.find_child("AnimationPlayer", true, false) as AnimationPlayer
+	if ap == null:
+		push_error("Arbiter model has no AnimationPlayer")
+		return
+	for lname in ap.get_animation_library_list():
+		var slib := ap.get_animation_library(lname)
+		var names: PackedStringArray = slib.get_animation_list()
+		for aname in names:
+			var copy := slib.get_animation(aname).duplicate()
+			_isolate_clip_tracks(copy, _clip_keeps(aname))
+			slib.remove_animation(aname)
+			slib.add_animation(aname, copy)
+	_rad_player = ap
+	_drive_player = _share_player(ap, "DriveAnims")
+	_gun_player = _share_player(ap, "GunAnims")
+	for nm in ["MainDriveIdle", "MainDriveLow", "MainDriveMedium", "MainDriveFull"]:
+		if _drive_player.has_animation(nm):
+			_drive_player.get_animation(nm).loop_mode = Animation.LOOP_LINEAR
+	_laser_player = _share_player(ap, "LaserAnims")
+	if _laser_player.has_animation("LaserFire"):
+		_prepare_laser_fire(_laser_player.get_animation("LaserFire"))
+	if _rad_player.has_animation("RadiatorDeploy"):
+		var deploy := _rad_player.get_animation("RadiatorDeploy")
+		_rad_player.speed_scale = 0.0
+		_rad_player.play("RadiatorDeploy")
+		_rad_player.seek(deploy.length, true)
+
+## Read TurretTrack (after the other clips have lost these tracks) and fit each hose bone to the head's yaw
+## and pitch. The bones are Skeleton3D poses, not nodes: the glTF joints were imported as bones.
+func _bind_ammo_feeds() -> void:
+	if _rad_player == null or not _rad_player.has_animation("TurretTrack"): return
+	var anim := _rad_player.get_animation("TurretTrack")
+	for lname in _rad_player.get_animation_library_list():
+		var slib := _rad_player.get_animation_library(lname)
+		for aname in slib.get_animation_list():
+			if aname.begins_with("Turret") or aname.begins_with("Rotary"): continue
+			var other := slib.get_animation(aname)
+			for i in other.get_track_count():
+				var path := str(other.track_get_path(i))
+				if "Flex" in path or "RT0" in path:
+					push_error("ammo-feed track left on %s: %s" % [aname, path])
+	var root := _rad_player.get_parent()
+	for n in range(1, 5):
+		var tag := "%02d" % n
+		var yaw := root.find_child("RotaryTurret_%s_Yaw" % tag, true, false) as Node3D
+		var pitch := root.find_child("RotaryTurret_%s_Pitch" % tag, true, false) as Node3D
+		var rig := root.find_child("RotaryTurret_%s_AmmoFeed_Flex_Rig" % tag, true, false) as Node3D
+		if yaw == null or pitch == null or rig == null: continue
+		var skel := rig.find_child("Skeleton3D", true, false) as Skeleton3D
+		if skel == null: continue
+		var yaw_track := _feed_track(anim, "RotaryTurret_%s_Yaw" % tag, Animation.TYPE_ROTATION_3D)
+		var pitch_track := _feed_track(anim, "RotaryTurret_%s_Pitch" % tag, Animation.TYPE_ROTATION_3D)
+		if yaw_track < 0 or pitch_track < 0: continue
+		var rest_y: Quaternion = yaw.quaternion
+		var rest_p: Quaternion = pitch.quaternion
+		var samples := 48
+		var dy := PackedFloat32Array()
+		var dp := PackedFloat32Array()
+		dy.resize(samples)
+		dp.resize(samples)
+		var ymin := 0.0
+		var ymax := 0.0
+		var pmin := 0.0
+		var pmax := 0.0
+		for s in samples:
+			var t := anim.length * float(s) / float(samples - 1)
+			var yq: Quaternion = anim.rotation_track_interpolate(yaw_track, t)
+			var pq: Quaternion = anim.rotation_track_interpolate(pitch_track, t)
+			var ay := _angle_about(rest_y, yq, Vector3.UP)
+			var ap := _angle_about(rest_p, pq, Vector3(0, 0, 1))
+			dy[s] = ay
+			dp[s] = ap
+			ymin = minf(ymin, ay)
+			ymax = maxf(ymax, ay)
+			pmin = minf(pmin, ap)
+			pmax = maxf(pmax, ap)
+		var bones: Array = []
+		for b in skel.get_bone_count():
+			var bone_name := skel.get_bone_name(b)
+			if not bone_name.begins_with("RT"): continue
+			var pos_track := _feed_track(anim, bone_name, Animation.TYPE_POSITION_3D)
+			var rot_track := _feed_track(anim, bone_name, Animation.TYPE_ROTATION_3D)
+			var rest_pos := skel.get_bone_pose_position(b)
+			var rest_quat := skel.get_bone_pose_rotation(b)
+			var tx := PackedFloat32Array()
+			var ty := PackedFloat32Array()
+			var tz := PackedFloat32Array()
+			var rx := PackedFloat32Array()
+			var ry := PackedFloat32Array()
+			var rz := PackedFloat32Array()
+			tx.resize(samples); ty.resize(samples); tz.resize(samples)
+			rx.resize(samples); ry.resize(samples); rz.resize(samples)
+			for s in samples:
+				var t := anim.length * float(s) / float(samples - 1)
+				var pos := rest_pos
+				if pos_track >= 0:
+					pos = anim.position_track_interpolate(pos_track, t)
+				var rv := Vector3.ZERO
+				if rot_track >= 0:
+					rv = _rotvec(rest_quat, anim.rotation_track_interpolate(rot_track, t))
+				var delta := pos - rest_pos
+				tx[s] = delta.x; ty[s] = delta.y; tz[s] = delta.z
+				rx[s] = rv.x; ry[s] = rv.y; rz[s] = rv.z
+			var fx := _fit_slope(dy, dp, tx)
+			var fy := _fit_slope(dy, dp, ty)
+			var fz := _fit_slope(dy, dp, tz)
+			var frx := _fit_slope(dy, dp, rx)
+			var fry := _fit_slope(dy, dp, ry)
+			var frz := _fit_slope(dy, dp, rz)
+			bones.append({
+				"idx": b,
+				"rest_pos": rest_pos,
+				"rest_quat": rest_quat,
+				"t_yaw": Vector3(fx.x, fy.x, fz.x),
+				"t_pitch": Vector3(fx.y, fy.y, fz.y),
+				"r_yaw": Vector3(frx.x, fry.x, frz.x),
+				"r_pitch": Vector3(frx.y, fry.y, frz.y),
+			})
+		var b0: Vector3 = (pitch.transform.basis * Vector3.RIGHT).normalized()
+		_feeds.append({
+			"yaw": yaw, "pitch": pitch, "rest_y": rest_y, "rest_p": rest_p, "b0": b0,
+			"alpha": 0.0, "beta": 0.0, "skel": skel, "bones": bones,
+			"yaw_min": ymin, "yaw_max": ymax, "pitch_min": pmin, "pitch_max": pmax,
+		})
+
+func _feed_track(anim: Animation, leaf: String, type: Animation.TrackType) -> int:
+	for i in anim.get_track_count():
+		if anim.track_get_type(i) != type: continue
+		var path := str(anim.track_get_path(i))
+		var tail := path.substr(path.rfind("/") + 1)
+		if tail == leaf or tail.begins_with(leaf + ":") or tail == "Skeleton3D:" + leaf or tail.ends_with(":" + leaf):
+			return i
+	return -1
+
+## z = a * yaw + b * pitch, through the rest pose. Returns (a, b).
+func _fit_slope(yaw: PackedFloat32Array, pitch: PackedFloat32Array, value: PackedFloat32Array) -> Vector2:
+	var s11 := 0.0
+	var s12 := 0.0
+	var s22 := 0.0
+	var r1 := 0.0
+	var r2 := 0.0
+	for i in value.size():
+		var x := yaw[i]
+		var y := pitch[i]
+		s11 += x * x
+		s12 += x * y
+		s22 += y * y
+		r1 += x * value[i]
+		r2 += y * value[i]
+	var det := s11 * s22 - s12 * s12
+	if absf(det) < 1e-8: return Vector2.ZERO
+	return Vector2((r1 * s22 - r2 * s12) / det, (s11 * r2 - s12 * r1) / det)
+
+func _angle_about(rest: Quaternion, q: Quaternion, axis: Vector3) -> float:
+	var d := rest.inverse() * q
+	if d.w < 0.0:
+		d = Quaternion(-d.x, -d.y, -d.z, -d.w)
+	var v := Vector3(d.x, d.y, d.z)
+	var along := v.dot(axis)
+	var s := v.length()
+	if s < 1e-8: return 0.0
+	var sign := 1.0 if absf(along) <= 1e-8 or along > 0.0 else -1.0
+	return 2.0 * atan2(s, d.w) * sign
+
+func _rotvec(rest: Quaternion, q: Quaternion) -> Vector3:
+	var d := rest.inverse() * q
+	if d.w < 0.0:
+		d = Quaternion(-d.x, -d.y, -d.z, -d.w)
+	var v := Vector3(d.x, d.y, d.z)
+	var s := v.length()
+	if s < 1e-8: return Vector3.ZERO
+	return v / s * (2.0 * atan2(s, d.w))
+
+func _quat_from_rotvec(v: Vector3) -> Quaternion:
+	var a := v.length()
+	if a < 1e-8: return Quaternion.IDENTITY
+	return Quaternion(v / a, a)
+
+func _aim_rotary(at: Vector3, hoses := true) -> void:
+	for rec in _feeds:
+		var yaw: Node3D = rec["yaw"]
+		var dir := at - yaw.global_position
+		if dir.length_squared() < 1.0: continue
+		var ang := _gimbal_angles(yaw, rec["rest_y"], rec["b0"], dir.normalized(), rec["alpha"], rec["beta"])
+		ang.x = clampf(ang.x, rec["yaw_min"], rec["yaw_max"])
+		ang.y = clampf(ang.y, rec["pitch_min"], rec["pitch_max"])
+		rec["alpha"] = ang.x
+		rec["beta"] = ang.y
+		_apply_gimbal(yaw, rec["pitch"], rec["rest_y"], rec["rest_p"], ang, 1.0)
+		# The scope copy is a few dozen pixels wide. The RT0N_Flex hoses do not read there, so that
+		# copy skips the bone writes. The mount itself still aims.
+		if not hoses: continue
+		var skel: Skeleton3D = rec["skel"]
+		for bone in rec["bones"]:
+			var pos: Vector3 = bone["rest_pos"] + bone["t_yaw"] * ang.x + bone["t_pitch"] * ang.y
+			var rv: Vector3 = bone["r_yaw"] * ang.x + bone["r_pitch"] * ang.y
+			skel.set_bone_pose_position(bone["idx"], pos)
+			skel.set_bone_pose_rotation(bone["idx"], bone["rest_quat"] * _quat_from_rotvec(rv))
+
+## LaserFire, as exported, scales every beam (and, once imported, a pile of unrelated rest poses). Keep only the
+## three beam scales. The clip pulses each beam up to full size and hides it the rest of the time; a turret that
+## is actually firing should not blink out, so the hidden keys stay at LASER_BEAM_HOLD and the pulses reach 1.
+func _prepare_laser_fire(anim: Animation) -> void:
+	anim.loop_mode = Animation.LOOP_LINEAR
+	for i in range(anim.get_track_count() - 1, -1, -1):
+		var path := str(anim.track_get_path(i))
+		if anim.track_get_type(i) != Animation.TYPE_SCALE_3D or not ("LaserBeam" in path):
+			anim.remove_track(i)
+			continue
+		for k in anim.track_get_key_count(i):
+			var v: Vector3 = anim.track_get_key_value(i, k)
+			var env := clampf(v.x, 0.0, 1.0)
+			var s := lerpf(LASER_BEAM_HOLD, 1.0, env)
+			anim.track_set_key_value(i, k, Vector3(s, s, s))
+
+## Round housings are authored double-sided. prepare_arbiter.py sets that flag on the whole file, then
+## single_side_laser_apertures clones the laser balls back to single-sided. This walk is the guard for a
+## drop-in that forgets the flag: a one-sided shell draws open. Effect meshes are left alone.
+## The laser balls are not forced here either: v18d closed them and faced the bowls outward, with a twin
+## surface 0.3 mm inside. Drawing both sides z-fights across that gap.
+func _double_side_housings(root: Node) -> void:
+	for mi in root.find_children("*", "MeshInstance3D", true, false):
+		var n := String(mi.name)
+		if n.begins_with("Turret_") and "Pitch_Geo" in n: continue
+		if "SecondaryMirrorFace" in n: continue
+		var housing := ("Turret_" in n or "Sensor_" in n or "RotaryTurret_" in n) and "Geo" in n
+		if not housing or "Laser" in n or "Glow" in n or "Beam" in n: continue
+		var mesh := (mi as MeshInstance3D).mesh
+		if mesh == null: continue
+		for s in mesh.get_surface_count():
+			var mat := mesh.surface_get_material(s) as BaseMaterial3D
+			if mat == null or mat.cull_mode == BaseMaterial3D.CULL_DISABLED: continue
+			var m2 := mat.duplicate() as BaseMaterial3D
+			m2.cull_mode = BaseMaterial3D.CULL_DISABLED
+			mesh.surface_set_material(s, m2)
+
+## Named glow caps live in prepare_arbiter.py (cap_emissive_strength), including the aperture ring at 1.7.
+## This walk is the guard for a surface prepare did not cap. It copies a material only when the peak is
+## still over the cap, so a hull that already matches is left alone.
+func _tame_arbiter_emission(root: Node) -> void:
+	var capped := {}
+	for mi in root.find_children("*", "MeshInstance3D", true, false):
+		var mesh := (mi as MeshInstance3D).mesh
+		if mesh == null: continue
+		for s in mesh.get_surface_count():
+			var mat := mesh.surface_get_material(s) as StandardMaterial3D
+			if mat == null or not mat.emission_enabled: continue
+			var id := mat.get_instance_id()
+			if capped.has(id):
+				if capped[id] != mat:
+					mesh.surface_set_material(s, capped[id])
+				continue
+			var aperture := "ApertureGlow" in String(mi.name) or "ApertureGlow" in String(mat.resource_name)
+			var peak := maxf(mat.emission.r, maxf(mat.emission.g, mat.emission.b)) * mat.emission_energy_multiplier
+			# The glow ring is pinned just over the bloom threshold (1.6). The generic cap would
+			# pull it under that, and the ring would not bloom at all.
+			if aperture:
+				var cpeak := maxf(mat.emission.r, maxf(mat.emission.g, mat.emission.b))
+				var want := mat.emission_energy_multiplier
+				if cpeak > 0.001:
+					want = 1.7 / cpeak
+				if absf(want - mat.emission_energy_multiplier) <= 0.02:
+					capped[id] = mat
+					continue
+				var glow := mat.duplicate() as StandardMaterial3D
+				glow.emission_energy_multiplier = want
+				capped[id] = glow
+				mesh.surface_set_material(s, glow)
+				continue
+			if peak <= 1.7:
+				capped[id] = mat
+				continue
+			var m2 := mat.duplicate() as StandardMaterial3D
+			m2.emission_energy_multiplier = mat.emission_energy_multiplier * (1.45 / peak)
+			capped[id] = m2
+			mesh.surface_set_material(s, m2)
+
+## One frame at startup renders the effect materials (charge, plume, muzzle, beams) so the first shot or the
+## first burn does not stall on a shader compile. The copies live in a throwaway viewport, not the battle.
+func expose_for_warmup() -> void:
+	if arbiter:
+		for n: Node3D in _gun_fx:
+			n.visible = true
+			if String(n.name).begins_with("Coilgun_Coil_"):
+				n.scale = Vector3(1.2, 0.35, 1.2)
+		if _drive_node:
+			_drive_node.visible = true
+			_drive_node.scale = Vector3.ONE
+		if _muzzle_flash:
+			_muzzle_flash.visible = true
+		for b in _laser_beams:
+			if b == null: continue
+			(b as Node3D).visible = true
+			(b as Node3D).scale = Vector3.ONE
+	else:
+		if plume: plume.visible = true
+		for b in _laser_beams:
+			if b == null: continue
+			(b as Node3D).visible = true
+	var flash := MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 0.4
+	flash.mesh = sm
+	flash.material_override = _glow_mat((Color(1.0, 0.55, 0.25) if mars else Color(0.55, 0.8, 1.0)) * (0.55 if arbiter else 6.0))
+	flash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(flash)
+
+## Coil and flare meshes are replaced with a small unshaded additive streak. The file's emissive strength is
+## real (Godot imports it) and, left alone, blooms across the frame; the colour passed in stays under that.
+func _brighten_fx(n: Node, color: Color, through := false) -> void:
+	var meshes: Array = []
+	if n is MeshInstance3D: meshes.append(n)
+	meshes.append_array(n.find_children("*", "MeshInstance3D", true, false))
+	for mi in meshes:
+		var m := StandardMaterial3D.new()
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		m.cull_mode = BaseMaterial3D.CULL_DISABLED
+		m.no_depth_test = through
+		m.albedo_color = color
+		(mi as MeshInstance3D).material_override = m
+		(mi as GeometryInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+## Godot honours KHR_materials_emissive_strength; prepare_arbiter.py caps it with the other glow materials.
+## The streak we ship is still this unshaded additive colour. The file's own beam is a dark mesh, and a
+## strength multiplier on it does not read against the hull. Left in place until a shot shows that beam is
+## the one we want.
+func _brighten_laser_beam(beam: Node3D) -> void:
+	for c in beam.find_children("*", "MeshInstance3D", true, false):
+		var mi := c as MeshInstance3D
+		var m := StandardMaterial3D.new()
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		m.cull_mode = BaseMaterial3D.CULL_DISABLED
+		var glow := "Glow" in String(mi.name)
+		m.albedo_color = Color(1.0, 0.32, 0.08, 0.55 if glow else 1.0) * (1.5 if glow else 1.8)
+		mi.material_override = m
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+## Point the visual head along the sim's aim. Yaw spins the mount about its local Y; pitch, about the head's
+## local Z. The beam mesh lies in the yaw node's XY plane, so pitch sets the component along the yaw axis and
+## yaw swings the rest.
+func _aim_arbiter(aims: Array, blend: float) -> void:
+	for k in mini(_arbiter_rig.size(), aims.size()):
+		var rec: Array = _arbiter_rig[k]
+		var a: Vector3 = aims[k]
+		var world_dir := (global_transform.basis.orthonormalized() * Vector3(a.y, a.z, -a.x)).normalized()
+		var ang := _gimbal_angles(rec[0], rec[2], rec[4], world_dir, rec[6], rec[7])
+		rec[6] = ang.x
+		rec[7] = ang.y
+		_apply_gimbal(rec[0], rec[1], rec[2], rec[3], ang, blend)
+
+## The dorsal sensor looks along the pitch node's local +X (the lens sits on that side). Same yaw-about-Y,
+## pitch-about-Z rig as the laser heads. The demo never hides a ship behind anything, so it just looks at the enemy.
+func aim_sensor(at: Vector3, hoses := true) -> void:
+	if not arbiter or not is_inside_tree(): return
+	_aim_rotary(at, hoses)
+	if _sensor.is_empty(): return
+	var yaw: Node3D = _sensor[0]
+	var dir := at - yaw.global_position
+	if dir.length_squared() < 1.0: return
+	var ang := _gimbal_angles(yaw, _sensor[2], _sensor[4], dir.normalized(), _sensor[5], _sensor[6])
+	_sensor[5] = ang.x
+	_sensor[6] = ang.y
+	# The sensor has no slew limit in the sim. It takes the short arc and is there the same frame, including
+	# the first one, so it never unwinds from the rest pose.
+	_apply_gimbal(yaw, _sensor[1], _sensor[2], _sensor[3], ang, 1.0)
+
+func _gimbal_angles(yaw: Node3D, rest_y: Quaternion, b0: Vector3, world_dir: Vector3, alpha_hold: float, beta_hold: float) -> Vector2:
+	var parent_basis := (yaw.get_parent() as Node3D).global_transform.basis.orthonormalized()
+	var d_local := (rest_y.inverse() * (parent_basis.inverse() * world_dir)).normalized()
+	var y := clampf(d_local.y, -1.0, 1.0)
+	var xmag := sqrt(maxf(0.0, 1.0 - y * y))
+	var x := xmag if b0.x >= 0.0 else -xmag
+	# atan2 jumps by a full turn at its branch cut. Step from the last command by the short way, so the
+	# stored angle cannot wind and the quaternion we build stays on the short arc.
+	var alpha := alpha_hold
+	if absf(x) > 0.02:
+		var raw := atan2(-d_local.z / x, d_local.x / x)
+		alpha = alpha_hold + wrapf(raw - alpha_hold, -PI, PI)
+	var raw_b := wrapf(atan2(y, x) - atan2(b0.y, b0.x), -PI, PI)
+	var beta := beta_hold + wrapf(raw_b - beta_hold, -PI, PI)
+	return Vector2(alpha, beta)
+
+func _apply_gimbal(yaw: Node3D, pitch: Node3D, rest_y: Quaternion, rest_p: Quaternion, ang: Vector2, blend: float) -> void:
+	var yq := rest_y * Quaternion(Vector3(0, 1, 0), ang.x)
+	var pq := rest_p * Quaternion(Vector3(0, 0, 1), ang.y)
+	yaw.quaternion = yq if blend >= 1.0 else yaw.quaternion.slerp(yq, blend)
+	pitch.quaternion = pq if blend >= 1.0 else pitch.quaternion.slerp(pq, blend)
+
+func _show_arbiter(s: Dictionary, _glow: float) -> void:
+	# 0 is folded, 1 is deployed. speed_scale stays 0 so the pose holds on the frame we seek to; pausing the
+	# player made a later seek look like it had landed when a second clip was still writing the wings.
+	if _rad_player and _rad_player.has_animation("RadiatorDeploy") and _rad_open != _rad_shown:
+		_rad_shown = _rad_open
+		var anim := _rad_player.get_animation("RadiatorDeploy")
+		_rad_player.speed_scale = 0.0
+		if _rad_player.current_animation != "RadiatorDeploy" or not _rad_player.is_playing():
+			_rad_player.play("RadiatorDeploy")
+		_rad_player.seek(clampf(_rad_open, 0.0, 1.0) * anim.length, true)
+	if _drive_node:
+		var burning: bool = s["burning"]
+		_drive_node.visible = burning
+		if burning and _drive_player:
+			var th: float = clampf(float(s["throttle"]), 0.0, 1.0)
+			var clip := "MainDriveFull" if th > 0.8 else ("MainDriveMedium" if th > 0.45 else ("MainDriveLow" if th > 0.15 else "MainDriveIdle"))
+			if clip != _drive_clip:
+				_drive_clip = clip
+				_drive_player.play(clip)
+		elif _drive_player and _drive_player.is_playing():
+			_drive_player.stop()
+			_drive_clip = ""
+	var oms: Vector2 = s["oms"]
+	var exhaust := Vector3.ZERO
+	if oms.length() > 0.01 and is_inside_tree():
+		var h: float = s["heading"]
+		var push_sim := Vector2(cos(h), sin(h)) * oms.x + Vector2(-sin(h), cos(h)) * oms.y
+		var push_world := Vector3(push_sim.x, 0, -push_sim.y)
+		exhaust = global_transform.basis.inverse() * (-push_world)
+	_show_oms_arbiter(exhaust)
+	_show_charge(s)
+
+func _show_oms_arbiter(exhaust: Vector3) -> void:
+	var radial := Vector3(exhaust.x, exhaust.y, 0)
+	var radial_n := radial.normalized() if radial.length() > 0.2 else Vector3.ZERO
+	for rec in _oms_jets:
+		var n: Node3D = rec[0]
+		var dir: Vector3 = rec[1]
+		var station: String = rec[2]
+		var on := false
+		if radial_n != Vector3.ZERO and dir.dot(radial_n) > 0.55:
+			on = true
+		if exhaust.z < -0.2 and station == "F":
+			on = true
+		if exhaust.z > 0.2 and station == "A":
+			on = true
+		n.visible = on
+		n.scale = Vector3.ONE if on else Vector3.ZERO
+
+## The coil lights in the model (CoilgunFire) plus the running wave the other ships use. The model's projectile
+## stays hidden: the round in flight is the one main.gd draws from the sim.
+func _fire_arbiter_gun() -> void:
+	if _gun_player == null or not _gun_player.has_animation("CoilgunFire"): return
+	for n: Node3D in _gun_fx:
+		n.visible = true
+	if _muzzle_flash:
+		_muzzle_flash.visible = true
+	# The charge seek leaves this player at speed 0. Without putting the speed back, CoilgunFire never
+	# advances: no coil wave, no recoil.
+	_gun_player.speed_scale = 1.0
+	_gun_player.play("CoilgunFire")
+	_gun_fx_left = _gun_player.get_animation("CoilgunFire").length
+	_charge_u = -1.0
+
+## CoilgunCharge runs across the sim's gun_cooldown and ends as that wait ends. The opening wait is shorter
+## than a full reload; the span is whatever cooldown we last saw jump up, so the clip starts empty then and
+## reaches its end as the cooldown reaches zero. A shot in progress owns the coil scales, so the seek waits.
+func _show_charge(s: Dictionary) -> void:
+	if _gun_player == null or not _gun_player.has_animation("CoilgunCharge"): return
+	var health: PackedFloat64Array = s["health"]
+	var alive: bool = health.size() > 2 and health[2] > 0 and bool(s["gun_armed"]) and int(s["ammo"]) > 0
+	var cd := float(s["gun_cooldown"])
+	if alive and cd > _charge_span:
+		_charge_span = cd
+	if _gun_fx_left > 0.0: return
+	if not alive:
+		for n: Node3D in _gun_fx:
+			n.visible = false
+		_charge_span = 0.0
+		_charge_u = -1.0
+		return
+	var span := _charge_span if _charge_span > 0.05 else maxf(float(s["gun_reload"]), 0.05)
+	var u := clampf(1.0 - cd / span, 0.0, 1.0)
+	# Seeking the player rewrites every coil track. The cooldown only moves on a sim tick, and once the gun is
+	# ready it sits still, so repeating the seek every frame was pure script cost.
+	if absf(u - _charge_u) < 0.002 and _charge_u >= 0.0: return
+	_charge_u = u
+	var anim := _gun_player.get_animation("CoilgunCharge")
+	_gun_player.speed_scale = 0.0
+	_gun_player.play("CoilgunCharge")
+	_gun_player.seek(u * anim.length, true)
+	_gun_player.pause()
+	# A little wider than the housing so the charge reads. The old ×2.2 discs, with a much hotter colour,
+	# filled the view; this only clears the coil cheek. The seek has just written the clip's scale;
+	# store that and set the node from it. Multiplying whatever scale is on the node compounds if a
+	# later edit seeks less often than it boosts.
+	for n: Node3D in _gun_fx:
+		if String(n.name).begins_with("Coilgun_Coil_"):
+			_coil_base[n] = n.scale
+			var base: Vector3 = _coil_base[n]
+			n.scale = Vector3(base.x * 1.15, base.y, base.z * 1.15)
+		n.visible = n.scale.length_squared() > 1.0e-5
