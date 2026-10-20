@@ -748,11 +748,15 @@ func _update_world(delta: float) -> void:
 		shot_vis.append([p, dir, tc])
 	# EO camera: a long lens is a camera placed close along the same line of sight, framed by the target's apparent size.
 	var q: float = battle.get_sensor_quality()
-	# Size snapped to 4 px steps and set only on change: a new size reallocates the render target.
+	# Size snapped to 4 px steps and set only on change: a new size reallocates the render target. That new
+	# target is uninitialised until this viewport draws into it. A real GPU shows that leftover memory as
+	# coloured noise; resizing while updates are off is what filled the scope during the tactical plot.
 	var res := int(clamp(12 + 180 * q * q, 12, 192)) / 4 * 4
-	if eo_vp.size.x != res: eo_vp.size = Vector2i(res, res)
-	var eo_mode := SubViewport.UPDATE_WHEN_VISIBLE if hud.visible or shot_path != "" else SubViewport.UPDATE_DISABLED
-	if tplot.visible: eo_mode = SubViewport.UPDATE_DISABLED
+	# The plot stops the main 3D view only. This feed stays live in every battle view, including the plot.
+	# It is a small unshadowed copy of the enemy, so it does not bring the main view's cost back.
+	var eo_live := hud.visible or shot_path != ""
+	if eo_live and eo_vp.size.x != res: eo_vp.size = Vector2i(res, res)
+	var eo_mode := SubViewport.UPDATE_WHEN_VISIBLE if eo_live else SubViewport.UPDATE_DISABLED
 	if eo_vp.render_target_update_mode != eo_mode: eo_vp.render_target_update_mode = eo_mode
 	if eo_mode == SubViewport.UPDATE_WHEN_VISIBLE and eo_model:
 		eo_model.position = foe_model.position
