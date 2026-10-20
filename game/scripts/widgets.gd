@@ -460,3 +460,47 @@ class Guard extends Control:
 			var x0 := r.position.x + 4 + k * 12
 			draw_line(Vector2(x0, r.position.y), Vector2(x0 + 8, r.end.y), PRI_INK, 4)
 		draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
+
+## One canvas item for a column of HUD captions. Each line keeps the font, size, colour and
+## alignment it had as its own Txt; only the draw is shared.
+class CapLine extends RefCounted:
+	var board
+	var i := 0
+	func _init(b, idx: int) -> void:
+		board = b
+		i = idx
+	func set_text(t: String, c: Variant = null) -> void:
+		board.set_line(i, t, c)
+
+class CapCol extends Control:
+	var rows: Array = []
+	func _init() -> void:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		size = Vector2(1440, 900)
+	func line(at: Vector2, text: String, fsize: int, col: Color, mono: bool, width: float, align := HORIZONTAL_ALIGNMENT_LEFT) -> CapLine:
+		rows.append({"at": at, "text": text, "size": fsize, "col": col, "mono": mono, "width": width, "align": align})
+		return CapLine.new(self, rows.size() - 1)
+	func set_line(i: int, text: String, c: Variant = null) -> void:
+		var row: Dictionary = rows[i]
+		var col: Color = row["col"] if c == null else c
+		if row["text"] == text and row["col"] == col:
+			return
+		row["text"] = text
+		row["col"] = col
+		queue_redraw()
+	func _draw() -> void:
+		# One pass per font. The lines do not overlap, and a run of the same font is one canvas draw
+		# instead of a draw per caption.
+		for mono in [true, false]:
+			for row in rows:
+				if bool(row["mono"]) != mono:
+					continue
+				var text: String = row["text"]
+				if text == "":
+					continue
+				var f: Font = W.FM if mono else W.FH
+				var y := float(row["size"])
+				var base: Vector2 = row["at"]
+				for bit in text.split("\n"):
+					draw_string(f, base + Vector2(0, y), bit, row["align"], row["width"], row["size"], row["col"])
+					y += int(float(row["size"]) * 1.4)

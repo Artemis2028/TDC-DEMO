@@ -1,6 +1,6 @@
 # Performance audit (v0.16.1)
 
-Options only. Nothing here is implemented.
+Written as options, before any of it was implemented. v0.17.0 took the same-picture items (the view chrome drawn once, the caption columns, the scope copy skipping hose bones) and code-review items 1–4 (the battle script split, one glow-cap list with the load-time guard kept, the coil scale set from a stored base, beam and armour section on the sim events). The GPU trades (MSAA, the shadow atlas, SSAO, backface culling, a cheaper glow, planet tessellation) and everything under "Not now" were not done. Clip-track stripping and the double-sided housing setup stayed. The rest of this note is the audit as it was written.
 
 The Windows build the user is playing is vsync-capped at about 60 fps on a real GPU, and it feels fine. The mesh, the paints and the decals stay as they are. This note is where that frame can get cheaper without a new hull, ranked by how much a discrete GPU is likely to gain at the current view size. The cloud machine renders with llvmpipe, so its frame time (about 134 ms, ~7 fps) is not a GPU measurement and is not used as one. Draw calls, triangles, viewport sizes and script time do carry over. Millisecond figures below are judgments from those counts for a mid-range discrete GPU at 804×684, not timings.
 

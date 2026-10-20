@@ -968,7 +968,9 @@ def check_contract(gltf):
     if missing_n or missing_a:
         raise SystemExit("replacement glb is missing nodes %s animations %s" % (missing_n, missing_a))
     # Housings stay double-sided: a one-sided shell looks open. The laser balls are the
-    # exception, applied after the mesh merge (single_side_laser_apertures).
+    # exception, applied after the mesh merge (single_side_laser_apertures). ship_model.gd
+    # _double_side_housings repeats the flag at load for a drop-in that forgot it, and skips
+    # the same laser balls. Both stay.
     for m in gltf["materials"]:
         m["doubleSided"] = True
         if m.get("name") in (

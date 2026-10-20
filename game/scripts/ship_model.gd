@@ -59,6 +59,7 @@ var _muzzle_flash: Node3D            # muzzle flash, shown only for the firing c
 var _gun_fx_left := 0.0
 var _charge_span := 0.0              # length of the wait the charge clip is currently playing across
 var _charge_u := -1.0                # last charge-clip fraction applied; a repeat seek is skipped
+var _coil_base := {}                  # Coilgun_Coil_* node -> the scale the charge clip just wrote
 var _sensor: Array = []              # [yaw, pitch, rest yaw, rest pitch, look dir in yaw space, alpha, beta]
 ## Rotary point-defence feeds. TurretTrack bends RT0N_Flex_01..07 with the head, but that clip is not played:
 ## live aim turns the yaw and pitch. Each bone's pose is the rest pose plus a linear function of those two
@@ -1106,7 +1107,7 @@ func _quat_from_rotvec(v: Vector3) -> Quaternion:
 	if a < 1e-8: return Quaternion.IDENTITY
 	return Quaternion(v / a, a)
 
-func _aim_rotary(at: Vector3) -> void:
+func _aim_rotary(at: Vector3, hoses := true) -> void:
 	for rec in _feeds:
 		var yaw: Node3D = rec["yaw"]
 		var dir := at - yaw.global_position
@@ -1117,6 +1118,9 @@ func _aim_rotary(at: Vector3) -> void:
 		rec["alpha"] = ang.x
 		rec["beta"] = ang.y
 		_apply_gimbal(yaw, rec["pitch"], rec["rest_y"], rec["rest_p"], ang, 1.0)
+		# The scope copy is a few dozen pixels wide. The RT0N_Flex hoses do not read there, so that
+		# copy skips the bone writes. The mount itself still aims.
+		if not hoses: continue
 		var skel: Skeleton3D = rec["skel"]
 		for bone in rec["bones"]:
 			var pos: Vector3 = bone["rest_pos"] + bone["t_yaw"] * ang.x + bone["t_pitch"] * ang.y
@@ -1140,10 +1144,11 @@ func _prepare_laser_fire(anim: Animation) -> void:
 			var s := lerpf(LASER_BEAM_HOLD, 1.0, env)
 			anim.track_set_key_value(i, k, Vector3(s, s, s))
 
-## Round housings are authored double-sided. A denser drop-in that forgets the flag would draw the shell
-## open (back faces culled), so these nodes are forced double-sided at load. Effect meshes are left alone.
-## The laser balls are not: v18d closed them and faced the bowls outward, with a twin surface 0.3 mm
-## inside. Drawing both sides z-fights across that gap.
+## Round housings are authored double-sided. prepare_arbiter.py sets that flag on the whole file, then
+## single_side_laser_apertures clones the laser balls back to single-sided. This walk is the guard for a
+## drop-in that forgets the flag: a one-sided shell draws open. Effect meshes are left alone.
+## The laser balls are not forced here either: v18d closed them and faced the bowls outward, with a twin
+## surface 0.3 mm inside. Drawing both sides z-fights across that gap.
 func _double_side_housings(root: Node) -> void:
 	for mi in root.find_children("*", "MeshInstance3D", true, false):
 		var n := String(mi.name)
@@ -1160,9 +1165,9 @@ func _double_side_housings(root: Node) -> void:
 			m2.cull_mode = BaseMaterial3D.CULL_DISABLED
 			mesh.surface_set_material(s, m2)
 
-## Godot does honour KHR_materials_emissive_strength. The file's multipliers run from 5 on the plume to 90 on the
-## muzzle flash and 45 on the drive throat, all far past the bloom threshold, so a burn or a shot whited out the
-## frame. Clamp them. Coil glows are replaced separately and stay under the threshold on purpose.
+## Named glow caps live in prepare_arbiter.py (cap_emissive_strength), including the aperture ring at 1.7.
+## This walk is the guard for a surface prepare did not cap. It copies a material only when the peak is
+## still over the cap, so a hull that already matches is left alone.
 func _tame_arbiter_emission(root: Node) -> void:
 	var capped := {}
 	for mi in root.find_children("*", "MeshInstance3D", true, false):
@@ -1173,21 +1178,29 @@ func _tame_arbiter_emission(root: Node) -> void:
 			if mat == null or not mat.emission_enabled: continue
 			var id := mat.get_instance_id()
 			if capped.has(id):
-				mesh.surface_set_material(s, capped[id])
+				if capped[id] != mat:
+					mesh.surface_set_material(s, capped[id])
 				continue
 			var aperture := "ApertureGlow" in String(mi.name) or "ApertureGlow" in String(mat.resource_name)
 			var peak := maxf(mat.emission.r, maxf(mat.emission.g, mat.emission.b)) * mat.emission_energy_multiplier
 			# The glow ring is pinned just over the bloom threshold (1.6). The generic cap would
 			# pull it under that, and the ring would not bloom at all.
 			if aperture:
-				var glow := mat.duplicate() as StandardMaterial3D
-				var cpeak := maxf(glow.emission.r, maxf(glow.emission.g, glow.emission.b))
+				var cpeak := maxf(mat.emission.r, maxf(mat.emission.g, mat.emission.b))
+				var want := mat.emission_energy_multiplier
 				if cpeak > 0.001:
-					glow.emission_energy_multiplier = 1.7 / cpeak
+					want = 1.7 / cpeak
+				if absf(want - mat.emission_energy_multiplier) <= 0.02:
+					capped[id] = mat
+					continue
+				var glow := mat.duplicate() as StandardMaterial3D
+				glow.emission_energy_multiplier = want
 				capped[id] = glow
 				mesh.surface_set_material(s, glow)
 				continue
-			if peak <= 1.7: continue
+			if peak <= 1.7:
+				capped[id] = mat
+				continue
 			var m2 := mat.duplicate() as StandardMaterial3D
 			m2.emission_energy_multiplier = mat.emission_energy_multiplier * (1.45 / peak)
 			capped[id] = m2
@@ -1240,9 +1253,10 @@ func _brighten_fx(n: Node, color: Color, through := false) -> void:
 		(mi as MeshInstance3D).material_override = m
 		(mi as GeometryInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
-## The beam meshes are black in the file. Their brightness lived in KHR_materials_emissive_strength, which the
-## importer drops, so a scale of 1 is still a dim line. An unshaded additive colour is the same streak, bright
-## enough to read against the hull.
+## Godot honours KHR_materials_emissive_strength; prepare_arbiter.py caps it with the other glow materials.
+## The streak we ship is still this unshaded additive colour. The file's own beam is a dark mesh, and a
+## strength multiplier on it does not read against the hull. Left in place until a shot shows that beam is
+## the one we want.
 func _brighten_laser_beam(beam: Node3D) -> void:
 	for c in beam.find_children("*", "MeshInstance3D", true, false):
 		var mi := c as MeshInstance3D
@@ -1271,9 +1285,9 @@ func _aim_arbiter(aims: Array, blend: float) -> void:
 
 ## The dorsal sensor looks along the pitch node's local +X (the lens sits on that side). Same yaw-about-Y,
 ## pitch-about-Z rig as the laser heads. The demo never hides a ship behind anything, so it just looks at the enemy.
-func aim_sensor(at: Vector3) -> void:
+func aim_sensor(at: Vector3, hoses := true) -> void:
 	if not arbiter or not is_inside_tree(): return
-	_aim_rotary(at)
+	_aim_rotary(at, hoses)
 	if _sensor.is_empty(): return
 	var yaw: Node3D = _sensor[0]
 	var dir := at - yaw.global_position
@@ -1400,8 +1414,12 @@ func _show_charge(s: Dictionary) -> void:
 	_gun_player.seek(u * anim.length, true)
 	_gun_player.pause()
 	# A little wider than the housing so the charge reads. The old ×2.2 discs, with a much hotter colour,
-	# filled the view; this only clears the coil cheek.
+	# filled the view; this only clears the coil cheek. The seek has just written the clip's scale;
+	# store that and set the node from it. Multiplying whatever scale is on the node compounds if a
+	# later edit seeks less often than it boosts.
 	for n: Node3D in _gun_fx:
 		if String(n.name).begins_with("Coilgun_Coil_"):
-			n.scale = Vector3(n.scale.x * 1.15, n.scale.y, n.scale.z * 1.15)
+			_coil_base[n] = n.scale
+			var base: Vector3 = _coil_base[n]
+			n.scale = Vector3(base.x * 1.15, base.y, base.z * 1.15)
 		n.visible = n.scale.length_squared() > 1.0e-5

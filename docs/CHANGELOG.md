@@ -3,6 +3,14 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.17.0
+- The battle screen is the same picture. The flight deck was one script; it is now a battle host (`main.gd`), the panels (`battle_hud.gd`), the frame around the view (`view_overlay.gd`) and the menu and end screen (`battle_menu.gd`). The host still owns the sim, the camera and the ships.
+- The cut corners, the rule and the view title are drawn once, and again only when the title or the help line changes. The target bracket and the tracers still follow the camera every frame. Caption columns share one canvas item each, and each item draws one font and then the other. On the same bench the HUD's canvas draws went from 438 to 423, and the frame's draw calls from 1,243 to 1,228.
+- The EO scope copy still aims its turrets and its sensor. It no longer poses the ammo-feed hose bones, which do not read in that small picture. The ships in the battle still do.
+- Named glow caps stay in the hull prepare step. The load-time walk still recaps a surface whose peak is over the cap (the nav lights, the strobe, the muzzle and the beam material are), and it leaves a surface that is already under the cap alone. The laser beam on screen is still the unshaded streak.
+- The coil charge discs take their size from the scale the charge clip just wrote, then a fixed 1.15 on that base. They no longer grow if a later edit seeks and multiplies out of step.
+- A burn-through event carries whether it was a beam or a round, and which armour section it went through. The after-action report reads those fields. The sentence the player sees is unchanged.
+
 ## v0.16.2
 - The Lance is the Arbiter TDC v18f hull (`art/source/arbiter-TDC_v18f.glb`, 43,432,072 bytes, SHA-256 `b53ecdcf45d4f302a01aa430a681064700e3ea46133c7cc1718646dfa3c4c742`). The v18d source is gone. The previous nodes and all 270 channels are still there. The four PDL-7 point-defence mounts are rebuilt as phased arrays: each has 90 raised deep-violet hex tiles in `PDL7_<Unit>_HexEmitters_Geo` under `PointDefence_PDL`, an octagon frame with flat iris blades, and a dark gunmetal plate. 335 nodes, 450,653 triangles. The name stays UEN Second Opinion, the class stays Coil Gun Frigate, and the Dagger and the Mars frigate are unchanged.
 - The hex tiles keep `MAT_PDL7_HexEmitter_Violet`. Its emission is the file's faint violet, peak about 0.06 with no strength multiplier, under the bloom threshold, so the tiles read violet and do not wash the hull. The faces point outward. The housing is still split into the nose and body fittings, so it keeps its shadow.

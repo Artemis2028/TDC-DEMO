@@ -234,7 +234,9 @@ double Battle::rnd() {
     return static_cast<double>((rng_ * 2685821657736338717ull) >> 11) * (1.0 / 9007199254740992.0);
 }
 
-void Battle::log(int ship, const char* kind, std::string text, bool real) { events_.push_back({time_, ship, kind, std::move(text), real}); }
+void Battle::log(int ship, const char* kind, std::string text, bool real, std::string weapon, std::string section) {
+    events_.push_back({time_, ship, kind, std::move(text), real, std::move(weapon), std::move(section)});
+}
 
 double Battle::range(int a, int b) const { return (ships_[b].pos - ships_[a].pos).len(); }
 double Battle::closing(int a, int b) const {
@@ -752,7 +754,8 @@ void Battle::damage(Ship& t, Sys aim, double amount, bool laser, int from) {
     }
     sync_armor(t);
     if (before > 0 && panel <= 0) {
-        log(t.id, "burn-through", std::string(laser ? "Beam" : "Rounds") + " through the " + section_name(entry) + " armour (" + panel_name(pi) + ") of " + t.name);
+        log(t.id, "burn-through", std::string(laser ? "Beam" : "Rounds") + " through the " + section_name(entry) + " armour (" + panel_name(pi) + ") of " + t.name,
+            false, laser ? "beam" : "rounds", section_name(entry));
         // The flash of a breach can look like a kill: a chance of a false call on a system in that section.
         std::vector<int> inside;
         for (int s = 0; s < kSys; ++s) if (t.cls.placed[s] == entry && t.health[s] > 0) inside.push_back(s);

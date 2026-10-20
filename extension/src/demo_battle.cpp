@@ -129,6 +129,8 @@ Array DemoBattle::get_events(int64_t from) const {
         d[KEY("time")] = ev[k].time; d[KEY("ship")] = ev[k].ship;
         d[KEY("kind")] = String::utf8(ev[k].kind.c_str()); d[KEY("text")] = String::utf8(ev[k].text.c_str());
         d[KEY("real")] = ev[k].real;
+        d[KEY("weapon")] = String::utf8(ev[k].weapon.c_str());
+        d[KEY("section")] = String::utf8(ev[k].section.c_str());
         a.push_back(d);
     }
     return a;

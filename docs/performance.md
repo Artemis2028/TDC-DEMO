@@ -133,3 +133,14 @@ Same live bench (`--bench 40 --class 1 --speed 2`), on this machine, llvmpipe. T
 | v0.16.2 (v18f hull) | 133.2 ms | 1.01 ms | 1243 | 1,198 k | 7.0 ms | 118 ms | 145 ms | 149 ms | 149 ms |
 
 The file itself is 450,653 triangles, 2,910 more than v18d. Draws went up by 20, for the four hex-tile meshes and their shadows. The housing stays in the section fittings, so it still casts a shadow. The mean frame did not move.
+
+## HUD canvas (v0.17.0)
+
+Same live bench (`--bench 40 --class 1 --speed 2`), on this machine, llvmpipe. The frame time is a CPU-renderer number, not the Windows GPU. The hull is the v18f mesh from v0.16.2. `canvas_draws` is the root viewport's canvas draw calls, which is the HUD. v0.16.2 did not print that counter; the before row is the same bench with only that print added, taken before this change.
+
+| | Frame | Script | Draws | Canvas | Triangles | World | HUD |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| v0.16.2 | 133.4 ms | 0.96 ms | 1243 | 438 | 1,198 k | 0.53 ms | 0.23 ms |
+| v0.17.0 | 133.6 ms | 1.16 ms | 1228 | 423 | 1,198 k | 0.60 ms | 0.33 ms |
+
+Canvas draws fell by 15. The caption columns are four controls, and each control draws one font and then the other, so a run of the same font is one draw. The view frame is drawn once and again only when its title changes; the bracket and the tracers still redraw every frame. That split does not remove the cached frame from the counter, because the canvas item is still submitted. The scope copy no longer poses the ammo-feed hoses. On this bench the world and HUD script times moved inside the spread of a 40-frame run (the same v0.16.2 code has measured 0.96 ms and 1.01 ms of script). The mean frame did not move. MSAA, the shadow atlas and SSAO were left as they were.
