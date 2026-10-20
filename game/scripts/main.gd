@@ -156,8 +156,8 @@ var shot_clicks: Array = []   # --click x,y (repeatable): synthetic clicks for c
 
 func _ready() -> void:
 	RenderingServer.set_default_clear_color(W.BG)
-	# Saved settings: volume, window mode, frame cap, fire-control lines, briefing. A cap at or above the
-	# display's refresh keeps vsync; a lower cap turns vsync off so frames are not dropped on every other slot.
+	# Saved settings: volume, window mode, frame cap, vsync, fire-control lines, briefing. Unlimited is
+	# vsync off and no cap. A numeric cap below the display refresh also turns vsync off so frames are not dropped.
 	Settings.load_and_apply()
 	fc_lines = Settings.fc_lines
 	laser_beams = Settings.laser_beams

@@ -15,6 +15,7 @@ var _vol: HSlider
 var _vol_txt: Label
 var _win_btns: Array = []
 var _fps_btns: Array = []
+var _vs_btns: Array = []
 var _fc_btns: Array = []
 var _beam_btns: Array = []
 var _fpsread_btns: Array = []
@@ -59,12 +60,12 @@ func _build() -> void:
 	var sb := UI.box(UI.PANEL, UI.PRI, 1)
 	sb.content_margin_left = 28
 	sb.content_margin_right = 28
-	sb.content_margin_top = 22
-	sb.content_margin_bottom = 22
+	sb.content_margin_top = 16
+	sb.content_margin_bottom = 16
 	pc.add_theme_stylebox_override("panel", sb)
 	cc.add_child(pc)
 	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 9)
+	v.add_theme_constant_override("separation", 6)
 	pc.add_child(v)
 	v.add_child(UI.label("Settings", 32, UI.PRI))
 
@@ -98,7 +99,13 @@ func _build() -> void:
 		var b := UI.button("Unlimited" if cap == 0 else str(cap), func(): _set_fps(cap), UI.PRI, 80)
 		row.add_child(b)
 		_fps_btns.append(b)
-	v.add_child(_note("Unlimited follows the display. A cap below the refresh rate turns vsync off, so the frames stay evenly spaced instead of missing every few."))
+	row = _row(v, "VSync")
+	for on in [true, false]:
+		var use: bool = on
+		var vb := UI.button("On" if use else "Off", func(): _set_vsync(use), UI.PRI, 80)
+		row.add_child(vb)
+		_vs_btns.append(vb)
+	v.add_child(_note("Unlimited turns vsync off and removes the cap, so the counter can go past the display. VSync on keeps 60, 120 or 144 tear-free when that cap is at or above the display. A cap below the refresh paces the frames with vsync off, so they stay evenly spaced."))
 
 	v.add_child(UI.header("Game"))
 	row = _row(v, "Fire-control lines at start")
@@ -206,6 +213,9 @@ func _refresh() -> void:
 	_vol_txt.text = "MUTE" if Settings.volume == 0 else "%d %%" % Settings.volume
 	for i in _win_btns.size(): UI.set_active(_win_btns[i], i == Settings.window_mode)
 	for i in _fps_btns.size(): UI.set_active(_fps_btns[i], Settings.FPS_CAPS[i] == Settings.fps_cap)
+	if not _vs_btns.is_empty():
+		UI.set_active(_vs_btns[0], Settings.vsync)
+		UI.set_active(_vs_btns[1], not Settings.vsync)
 	UI.set_active(_fc_btns[0], Settings.fc_lines)
 	UI.set_active(_fc_btns[1], not Settings.fc_lines)
 	UI.set_active(_beam_btns[0], Settings.laser_beams)
@@ -228,6 +238,10 @@ func _set_window(i: int) -> void:
 
 func _set_fps(c: int) -> void:
 	Settings.set_fps_cap(c)
+	_refresh()
+
+func _set_vsync(on: bool) -> void:
+	Settings.set_vsync(on)
 	_refresh()
 
 func _set_fc(on: bool) -> void:

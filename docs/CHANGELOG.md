@@ -5,6 +5,7 @@ CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so
 
 ## v0.16.1
 - The EO scope stays a live picture of the target in every battle view, including the tactical plot. The plot had stopped that small viewport from drawing while the panel kept showing its texture. As the track changed, the picture was resized into memory nothing had drawn into, so on a real GPU the scope filled with coloured noise. The main 3D view still stops rendering while the plot is up.
+- Unlimited no longer locks to the display. It had left vsync on, and a zero frame cap does not turn vsync off, so a 60 Hz screen stayed at 60. Unlimited now turns vsync off and sets no cap. Settings has a VSync switch, on by default, for the 60, 120 and 144 caps. A cap below the display still paces the frames with vsync off. The sim still steps at 10 Hz from the real frame time, and the picture still fills in between those steps.
 
 ## v0.16.0
 - The Lance is the Arbiter TDC v18d hull (`art/source/arbiter-TDC_v18d.glb`, 43,320,360 bytes, SHA-256 `c80a2ab85d8fa68efaaa4a33aa6393e089863cf3e75eca3735207ca6e018425b`). The v17 source is gone. The previous nodes and all 270 channels are still there. Added on each laser head, under `Turret_0N_Pitch`: a secondary mirror face and an aperture glow ring. 331 nodes, 447,743 triangles. The name stays UEN Second Opinion, the class stays Coil Gun Frigate, and the Dagger and the Mars frigate are unchanged.

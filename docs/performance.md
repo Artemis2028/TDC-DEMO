@@ -39,7 +39,8 @@ At 60 fps it runs one frame in four.
   the 3D overlay, the alerts and the attitude ball redraw every frame. The nameplate, condition badge, scope labels,
   attitude ball and teletype redraw only when what they show changes.
 - **Frame cap:** 120 fps, so a 144 to 240 Hz monitor doesn't run the GPU flat out. v0.13.1 turns vsync off when that
-  cap is below the display refresh, because vsync and a lower cap drop frames on every other slot.
+  cap is below the display refresh, because vsync and a lower cap drop frames on every other slot. v0.16.1 makes
+  Unlimited actually uncapped (vsync off, no cap). VSync stays a separate switch and defaults to on.
 
 Kept as is: 4x MSAA. At 2x the hull's panel seams break into dashes, checked side by side.
 
