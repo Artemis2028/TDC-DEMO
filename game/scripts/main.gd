@@ -404,6 +404,25 @@ static func _star_panorama() -> ImageTexture:
 				var q := Vector2i(x, y) + d
 				if q.x >= 0 and q.x < w and q.y >= 0 and q.y < h:
 					img.set_pixel(q.x, q.y, tint * b * 0.35)
+	# A small sun in the directional light's direction. The panorama is what metal reflects, and a
+	# starfield alone leaves the copper mirrors black. Peak is 1.0, under the bloom threshold.
+	var sun := Vector3(0.776, 0.242, -0.582).normalized()
+	var sun_u := atan2(sun.x, -sun.z)
+	if sun_u < 0.0: sun_u += TAU
+	sun_u /= TAU
+	var sun_v := acos(clampf(sun.y, -1.0, 1.0)) / PI
+	var sun_px := Vector2(sun_u * (w - 1), sun_v * (h - 1))
+	var rad := 70.0
+	for y in range(int(sun_px.y) - int(rad), int(sun_px.y) + int(rad) + 1):
+		if y < 0 or y >= h: continue
+		for x in range(int(sun_px.x) - int(rad), int(sun_px.x) + int(rad) + 1):
+			if x < 0 or x >= w: continue
+			var d := Vector2(x, y).distance_to(sun_px) / rad
+			if d >= 1.0: continue
+			var g := pow(1.0 - d, 2.0)
+			var warm := Color(1.0, 0.93, 0.78) * g
+			var had := img.get_pixel(x, y)
+			img.set_pixel(x, y, Color(maxf(had.r, warm.r), maxf(had.g, warm.g), maxf(had.b, warm.b)))
 	return ImageTexture.create_from_image(img)
 
 func _spawn_models() -> void:

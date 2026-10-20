@@ -2,7 +2,7 @@ class_name ShipModel
 extends Node3D
 ## A ship as the game draws it. Mars and the lasers-only Dagger come from models/mars.glb and models/earth.glb
 ## (art/build_ships.py, art/import_dagger.py). The Lance, the Earth ship that carries the coilgun, is the Arbiter
-## TDC v17 hull (models/arbiter.glb): same axis convention, its own mesh, and the clips exported with it.
+## TDC v18d hull (models/arbiter.glb): same axis convention, its own mesh, and the clips exported with it.
 ## This script finds the named parts and brings them to life: turrets turn toward the target, radiators fold and
 ## glow with heat, OMS jets and the drive plume show the burn, knocked-out turrets go dark, and the armour view
 ## tints each hull section by its condition.
@@ -87,6 +87,28 @@ const OMS_AFT := 0.765
 
 ## Build the ship. gun_kind: 0 none, 1 railgun, 2 coilgun.
 ## Earth has two hulls: the Dagger (lasers only) keeps models/earth.glb; the Lance (coilgun) is the Arbiter.
+func _ready() -> void:
+	# Godot re-renders a reflection probe whenever its transform changes. Freezing it at the
+	# spawn pose keeps the capture to a handful of faces at load, not one cubemap a frame.
+	var probe := get_node_or_null("HullReflection") as ReflectionProbe
+	if probe:
+		probe.top_level = true
+
+## One cubemap for the copper mirrors. Shadows off, captured from above the hull so the
+## camera is not inside the mesh. The box rides with this ship only until _ready freezes it,
+## and it does not reach the other ship at the start of a fight.
+func _add_arbiter_reflection() -> void:
+	var probe := ReflectionProbe.new()
+	probe.name = "HullReflection"
+	probe.update_mode = ReflectionProbe.UPDATE_ONCE
+	probe.enable_shadows = false
+	probe.interior = false
+	probe.box_projection = false
+	probe.intensity = 1.0
+	probe.size = Vector3(800.0, 300.0, 800.0)
+	probe.origin_offset = Vector3(0.0, 36.0, 0.0)
+	add_child(probe)
+
 func build(is_mars: bool, gun_kind: int) -> void:
 	mars = is_mars
 	length = 130.0 if mars else 193.6
@@ -696,6 +718,7 @@ func _build_arbiter() -> void:
 	_bind_ammo_feeds()
 	_tame_arbiter_emission(root)
 	_double_side_housings(root)
+	_add_arbiter_reflection()
 	var far := root.find_child("Target_Track_Point", true, false) as Node3D
 	if far: far.position = Vector3.ZERO
 	# Hull size from the section meshes, in this node's space (the root scale included).
@@ -1119,9 +1142,13 @@ func _prepare_laser_fire(anim: Animation) -> void:
 
 ## Round housings are authored double-sided. A denser drop-in that forgets the flag would draw the shell
 ## open (back faces culled), so these nodes are forced double-sided at load. Effect meshes are left alone.
+## The laser balls are not: v18d closed them and faced the bowls outward, with a twin surface 0.3 mm
+## inside. Drawing both sides z-fights across that gap.
 func _double_side_housings(root: Node) -> void:
 	for mi in root.find_children("*", "MeshInstance3D", true, false):
 		var n := String(mi.name)
+		if n.begins_with("Turret_") and "Pitch_Geo" in n: continue
+		if "SecondaryMirrorFace" in n: continue
 		var housing := ("Turret_" in n or "Sensor_" in n or "RotaryTurret_" in n) and "Geo" in n
 		if not housing or "Laser" in n or "Glow" in n or "Beam" in n: continue
 		var mesh := (mi as MeshInstance3D).mesh
@@ -1148,7 +1175,18 @@ func _tame_arbiter_emission(root: Node) -> void:
 			if capped.has(id):
 				mesh.surface_set_material(s, capped[id])
 				continue
+			var aperture := "ApertureGlow" in String(mi.name) or "ApertureGlow" in String(mat.resource_name)
 			var peak := maxf(mat.emission.r, maxf(mat.emission.g, mat.emission.b)) * mat.emission_energy_multiplier
+			# The glow ring is pinned just over the bloom threshold (1.6). The generic cap would
+			# pull it under that, and the ring would not bloom at all.
+			if aperture:
+				var glow := mat.duplicate() as StandardMaterial3D
+				var cpeak := maxf(glow.emission.r, maxf(glow.emission.g, glow.emission.b))
+				if cpeak > 0.001:
+					glow.emission_energy_multiplier = 1.7 / cpeak
+				capped[id] = glow
+				mesh.surface_set_material(s, glow)
+				continue
 			if peak <= 1.7: continue
 			var m2 := mat.duplicate() as StandardMaterial3D
 			m2.emission_energy_multiplier = mat.emission_energy_multiplier * (1.45 / peak)

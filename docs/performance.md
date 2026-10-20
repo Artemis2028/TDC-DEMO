@@ -110,3 +110,14 @@ Same live bench (`--bench 40 --class 1 --speed 2`), on this machine, llvmpipe. T
 | v0.15.0 (v17 hull) | 133.4 ms | 0.72 ms | 1213 | 1,121 k | 4.8 ms | 119 ms | 139 ms | 144 ms | 144 ms |
 
 The file itself is 417,764 triangles. Draws went up by 20, for the feed skins, the rotary domes and the decal surfaces. The mean frame did not move.
+
+## Arbiter TDC v18d (v0.16.0)
+
+Same live bench (`--bench 40 --class 1 --speed 2`), on this machine, llvmpipe. The frame time is a CPU-renderer number, not the Windows GPU. v0.15.1 and v0.15.2 did not change the hull, so the v0.15.2 row is the v0.15.0 measurement of that same v17 mesh.
+
+| | Frame | Script | Draws | Triangles | Frame sd | Min | p95 | p99 | Max |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| v0.15.2 (v17 hull) | 133.4 ms | 0.72 ms | 1213 | 1,121 k | 4.8 ms | 119 ms | 139 ms | 144 ms | 144 ms |
+| v0.16.0 (v18d hull) | 133.6 ms | 0.95 ms | 1223 | 1,190 k | 5.5 ms | 122 ms | 146 ms | 146 ms | 146 ms |
+
+The file itself is 447,743 triangles. Draws went up by 10, for the secondary-mirror discs, the aperture glow rings and the single-sided copies of the laser-ball materials. The reflection probe is captured once at spawn and does not move, so it is not in the frame time. The mean frame did not move.

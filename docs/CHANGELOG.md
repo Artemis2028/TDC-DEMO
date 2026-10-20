@@ -3,6 +3,10 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.16.0
+- The Lance is the Arbiter TDC v18d hull (`art/source/arbiter-TDC_v18d.glb`, 43,320,360 bytes, SHA-256 `c80a2ab85d8fa68efaaa4a33aa6393e089863cf3e75eca3735207ca6e018425b`). The v17 source is gone. The previous nodes and all 270 channels are still there. Added on each laser head, under `Turret_0N_Pitch`: a secondary mirror face and an aperture glow ring. 331 nodes, 447,743 triangles. The name stays UEN Second Opinion, the class stays Coil Gun Frigate, and the Dagger and the Mars frigate are unchanged.
+- The laser ball shells are closed, and the bowls and mirrors face outward, so those meshes are drawn single-sided. The other housings stay double-sided. The primary mirror is the file's copper-gold, the secondary mirror is visible, and the glow ring inside the lip is held just over the bloom threshold so it halos without washing the frame. A reflection probe frozen at spawn, plus a small sun in the starfield, gives the copper something to reflect.
+
 ## v0.15.2
 - The coilgun Earth ship is a Coil Gun Frigate. The nameplate subtitle reads COIL GUN FRIGATE, and the ship menu says UEN Second Opinion · Coil Gun Frigate. The name stays UEN Second Opinion. The Dagger and the Mars frigate are unchanged.
 

@@ -34,7 +34,7 @@ import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC_DEFAULT = os.path.join(HERE, "source", "arbiter-TDC_v17.glb")
+SRC_DEFAULT = os.path.join(HERE, "source", "arbiter-TDC_v18d.glb")
 DST_DEFAULT = os.path.join(HERE, "..", "game", "models", "arbiter.glb")
 
 # World Z of the section planes (authored metres, nose at -Z).
@@ -379,6 +379,9 @@ _EMISSIVE_CAP = {
     "MAT_FX_LaserGlow": 1.4,
     "MAT_FX_OMSGas": 1.45,
     "MAT_ArmedRing_Teal_7FD1C7.001": 1.8,
+    # Just over the glow threshold (1.6) so the aperture ring blooms, and under the
+    # old coil-gun wash. The runtime tamer leaves a peak of 1.7 alone.
+    "MAT_FEL_ApertureGlow_White": 1.7,
 }
 
 
@@ -868,13 +871,29 @@ def check_contract(gltf):
         missing_n.append("Coilgun_Coil_*_Glow")
     if len(rads) < 8:
         missing_n.append("Radiator_*_Geo (found %d)" % len(rads))
-    if len(nodes) < 325:
-        missing_n.append("node count %d, v17 hull has 325" % len(nodes))
+    if len(nodes) < 331:
+        missing_n.append("node count %d, v18d hull has 331" % len(nodes))
+    channels = sum(len(a.get("channels", [])) for a in gltf.get("animations", []))
+    if channels != 270:
+        missing_n.append("channel count %d, v18d hull has 270" % channels)
+    if nodes[gltf["scenes"][gltf.get("scene", 0)]["nodes"][0]].get("name") != "arbiter-TDC":
+        missing_n.append("root is not arbiter-TDC")
     parent = {}
     for n in nodes:
         for c in n.get("children", []):
             parent[c] = n.get("name")
     name_i = {n.get("name"): i for i, n in enumerate(nodes)}
+    # v18d adds the secondary-mirror disc and the aperture glow on each laser head.
+    # They have to stay on the pitch node the aim code already turns.
+    for turret in (1, 2, 3):
+        for kind in ("SecondaryMirrorFace_Geo", "ApertureGlowRing_Geo"):
+            nm = "Turret_%02d_%s" % (turret, kind)
+            want = "Turret_%02d_Pitch" % turret
+            if nm not in name_i:
+                missing_n.append(nm)
+                continue
+            if parent.get(name_i[nm]) != want:
+                missing_n.append("%s parent is %s, want %s" % (nm, parent.get(name_i[nm]), want))
     for dome in DOME_NODES:
         turret = dome.split("_")[1]
         want = "RotaryTurret_%s_Pitch" % turret
@@ -895,12 +914,53 @@ def check_contract(gltf):
         missing_n.append("flex bones not in a skin %s" % flex_unskinned)
     if missing_n or missing_a:
         raise SystemExit("replacement glb is missing nodes %s animations %s" % (missing_n, missing_a))
-    # Every material draws both sides unless a later art pass says otherwise. An open-looking
-    # housing in the coarse mesh was missing faces, not backface culling; a one-sided shell
-    # would look the same, so the flag stays on.
+    # Housings stay double-sided: a one-sided shell looks open. The laser balls are the
+    # exception, applied after the mesh merge (single_side_laser_apertures).
     for m in gltf["materials"]:
         m["doubleSided"] = True
+        if m.get("name") in (
+            "MAT_FEL_PrimaryMirror_TRUE.001",
+            "MAT_FEL_SecondaryMirror.001",
+            "MAT_FEL_BowlLiner_PolishedCopper.001",
+        ):
+            m.setdefault("pbrMetallicRoughness", {})["metallicFactor"] = 1.0
     return len(coils), len(rads)
+
+
+# The closed laser balls, the bowls and the mirrors face outward. v18d also added a reversed
+# twin 0.3 mm behind interior faces that used to show through the lip. Double-sided drawing
+# puts those two surfaces on top of each other. These meshes are single-sided; every other
+# housing stays double-sided. The clone happens after materials are merged, because the
+# merge fingerprints on colour and would fold a single-sided copy back into the shared one.
+_APERTURE_SINGLE = (
+    "Turret_01_Pitch_Geo", "Turret_02_Pitch_Geo", "Turret_03_Pitch_Geo",
+    "Turret_01_SecondaryMirrorFace_Geo", "Turret_02_SecondaryMirrorFace_Geo",
+    "Turret_03_SecondaryMirrorFace_Geo",
+    "Turret_01_ApertureGlowRing_Geo", "Turret_02_ApertureGlowRing_Geo",
+    "Turret_03_ApertureGlowRing_Geo",
+)
+
+
+def single_side_laser_apertures(gltf):
+    clones = {}
+
+    def single(mi):
+        if mi not in clones:
+            src = gltf["materials"][mi]
+            dup = json.loads(json.dumps(src))
+            dup["doubleSided"] = False
+            dup["name"] = src.get("name", "mat") + ".__cullback"
+            clones[mi] = len(gltf["materials"])
+            gltf["materials"].append(dup)
+        return clones[mi]
+
+    for n in gltf["nodes"]:
+        if n.get("name") not in _APERTURE_SINGLE or "mesh" not in n:
+            continue
+        for prim in gltf["meshes"][n["mesh"]]["primitives"]:
+            if "material" in prim:
+                prim["material"] = single(prim["material"])
+    return len(clones)
 
 
 def main(src, dst):
@@ -941,6 +1001,7 @@ def main(src, dst):
     smoothed, kept_normals = smooth_curved_normals(gltf, blob)
     gone = prune_unreachable(gltf)
     blob = compact_buffers(gltf, blob)
+    sided = single_side_laser_apertures(gltf)
     save_glb(dst, gltf, blob)
     # Surfaces Godot will draw: one per primitive on a scene mesh.
     prims = 0
@@ -963,7 +1024,7 @@ def main(src, dst):
     print("primitives %d -> %d on live meshes; fittings absorbed %d nodes; pruned %d" % (before, after, dropped, gone))
     print("scene primitives", prims, "triangles", tris)
     print("animations", len(gltf["animations"]), "missing targets", missing, "coils", coils, "radiator geos", rads)
-    print("nodes", len(gltf["nodes"]), "skins", len(gltf.get("skins", [])))
+    print("nodes", len(gltf["nodes"]), "skins", len(gltf.get("skins", [])), "aperture materials single-sided", sided)
     print("wrote", dst, os.path.getsize(dst))
 
 
