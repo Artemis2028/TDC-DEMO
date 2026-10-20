@@ -3,6 +3,9 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.15.1
+- The coilgun Earth's nameplate reads UEN Second Opinion. The ship-choice button, the watch-battle tip, the end screen and the after-action line use that name too. The Dagger and the Mars frigate keep theirs. The sim still calls that class Lance.
+
 ## v0.15.0
 - The Lance is the Arbiter TDC v17 hull (`art/source/arbiter-TDC_v17.glb`, 42,519,712 bytes, SHA-256 `4a88817383a651731a900382aa99137efd86b88a877faf430a771147e876da62`). The v11 source is gone. The original 277 nodes and 174 channels are still there. Added on top: 44 ammo-feed nodes (the `RT0N_Flex_00`–`_07` bones, their rigs and the feed tips) and a dome on each rotary pitch node, 325 nodes and 270 channels in all. 417,764 triangles. The Dagger and the Mars frigate are unchanged.
 - TurretTrack is still not played. The rotary heads aim at the contact, and each feed bone follows that yaw and pitch (a straight-line fit of the clip) so the hose bends with the head and stops at the same arc. Those channels stay on TurretTrack; every other clip has them stripped.

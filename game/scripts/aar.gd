@@ -368,6 +368,11 @@ func _build() -> void:
 	notes.append("1 point = 1% of a ship's armour + structure at the start. Laser hits are not logged one by one, so damage by weapon is inferred from when each weapon was firing or landing.")
 	report = {"headline": _headline(), "timeline": picked, "insights": chosen, "notes": notes}
 
+## The coilgun Earth class is stored as Lance and labelled UEN Second Opinion. Dagger and Mars stay as stored.
+func _shown_ship_name(ship: Dictionary) -> String:
+	var n := str(ship["name"])
+	return "UEN Second Opinion" if n == "Lance" else n
+
 func _headline() -> Array:
 	var won := winner == 0
 	var lines: Array = []
@@ -387,7 +392,7 @@ func _headline() -> Array:
 	lines.append("Enemy captain was " + style)
 	var loser: Dictionary = _final1 if won else _final0
 	if winner >= 0:
-		lines.append("%s is out of action: %s." % [str(loser["name"]), str(loser["out_reason"])])
+		lines.append("%s is out of action: %s." % [_shown_ship_name(loser), str(loser["out_reason"])])
 	lines.append("Hull at the end: you %d%%, enemy %d%%. Crew: you %d of %d, enemy %d of %d." % [
 		int(float(_final0["hull"]) * 100), int(float(_final1["hull"]) * 100),
 		int(_final0["crew"]), int(_final0["crew_max"]), int(_final1["crew"]), int(_final1["crew_max"])])

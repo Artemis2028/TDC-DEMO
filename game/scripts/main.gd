@@ -455,7 +455,9 @@ func _start(cls: int, brief := true) -> void:
 	_spawn_models()
 	snap_dirty = true
 	_snap()
-	own_name_s = "ESF " + str(S0["name"])
+	# The coilgun Earth's displayed name. The sim still calls that class Lance; Dagger and Mars keep their names.
+	own_name_s = "UEN Second Opinion" if cls == 1 else "ESF " + str(S0["name"])
+	plate_hull = -1
 	foe_name_s = "MRS " + str(S1["name"]).to_upper().replace("MARS ", "")
 	state = "battle"
 	menu.visible = false
@@ -916,7 +918,10 @@ func _build_top() -> void:
 		c.draw_line(Vector2(150, 61), Vector2(270, 61), W.PRI, 3)
 		if battle == null: return
 		var own: Dictionary = S0
-		W.text_c(c, W.FH, _own_name().to_upper(), Vector2(210, 15), 24, W.TEXT)
+		# The coilgun ship keeps the mixed-case name. The Dagger's plate stays capitals, as before.
+		var plate_name := _own_name()
+		if ship_class != 1: plate_name = plate_name.to_upper()
+		W.text_c(c, W.FH, plate_name, Vector2(210, 15), 24, W.TEXT)
 		var hullf: float = own["hull"]
 		W.text_c(c, W.FM, "%s · HULL %d%%" % [_own_class(), int(hullf * 100)], Vector2(210, 35), 11, W.MUTED)
 		for k in 24:
@@ -1282,6 +1287,11 @@ func _on_dc_line(i: int) -> void:
 func _own_name() -> String:
 	if battle == null: return "Dagger"
 	return own_name_s
+
+## Name shown for a ship. The coilgun Earth class is stored as Lance and labelled UEN Second Opinion.
+func _shown_ship_name(ship: Dictionary) -> String:
+	var n := str(ship["name"])
+	return "UEN Second Opinion" if n == "Lance" else n
 
 func _own_class() -> String:
 	if battle == null: return ""
@@ -1726,11 +1736,11 @@ func _build_menu() -> void:
 	_pick_scenario(scenario_pick)
 	v.add_child(UI.header("Choose your ship"))
 	v.add_child(UI.button("Dagger · laser cruiser", func(): _start(0), UI.PRI, 400))
-	v.add_child(UI.button("Lance · laser + spinal coilgun", func(): _start(1), UI.PRI, 400))
+	v.add_child(UI.button("UEN Second Opinion · laser + spinal coilgun", func(): _start(1), UI.PRI, 400))
 	# The AI flying Earth here charges in (closes to 20 km on auto fire) and wins only ~21 %, so say so: a player
 	# who watches first should not conclude Earth is hopeless.
 	var wb := UI.button("Watch an AI battle · aggressive Earth captain", _watch_ai, UI.SEC, 400)
-	wb.tooltip_text = "The AI flies your Lance aggressively: it charges to 20 km on auto fire and loses more often than not.\nA careful captain who holds the range does much better."
+	wb.tooltip_text = "The AI flies UEN Second Opinion aggressively: it charges to 20 km on auto fire and loses more often than not.\nA careful captain who holds the range does much better."
 	v.add_child(wb)
 	v.add_child(UI.header("Coming soon", UI.FAINT))
 	v.add_child(UI.locked("Ship designer", 400))
@@ -1808,7 +1818,7 @@ func _show_end() -> void:
 	var loser: Dictionary = foe if won else own
 	var lines_out := [
 		"Battle time %s" % _clock(battle.get_time()),
-		"%s: %s" % [loser["name"], loser["out_reason"]],
+		"%s: %s" % [_shown_ship_name(loser), loser["out_reason"]],
 		"Your hull %d%%, crew %d of %d" % [int(float(own["hull"]) * 100), own["crew"], own["crew_max"]],
 		"Enemy hull %d%%, crew %d of %d" % [int(float(foe["hull"]) * 100), foe["crew"], foe["crew_max"]],
 		"%s start · the enemy captain was %s" % [str(SCEN_NAMES[battle.get_scenario() + 1]), _style_text()],
