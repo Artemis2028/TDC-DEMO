@@ -1295,7 +1295,7 @@ func _shown_ship_name(ship: Dictionary) -> String:
 
 func _own_class() -> String:
 	if battle == null: return ""
-	return ["LASER CRUISER", "COILGUN CRUISER", "FRIGATE"][ship_class] + " · EARTH"
+	return ["LASER CRUISER", "COIL GUN FRIGATE", "FRIGATE"][ship_class] + " · EARTH"
 
 func _foe_name() -> String:
 	return foe_name_s
@@ -1736,7 +1736,7 @@ func _build_menu() -> void:
 	_pick_scenario(scenario_pick)
 	v.add_child(UI.header("Choose your ship"))
 	v.add_child(UI.button("Dagger · laser cruiser", func(): _start(0), UI.PRI, 400))
-	v.add_child(UI.button("UEN Second Opinion · laser + spinal coilgun", func(): _start(1), UI.PRI, 400))
+	v.add_child(UI.button("UEN Second Opinion · Coil Gun Frigate", func(): _start(1), UI.PRI, 400))
 	# The AI flying Earth here charges in (closes to 20 km on auto fire) and wins only ~21 %, so say so: a player
 	# who watches first should not conclude Earth is hopeless.
 	var wb := UI.button("Watch an AI battle · aggressive Earth captain", _watch_ai, UI.SEC, 400)

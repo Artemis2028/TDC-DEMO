@@ -3,6 +3,9 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.15.2
+- The coilgun Earth ship is a Coil Gun Frigate. The nameplate subtitle reads COIL GUN FRIGATE, and the ship menu says UEN Second Opinion · Coil Gun Frigate. The name stays UEN Second Opinion. The Dagger and the Mars frigate are unchanged.
+
 ## v0.15.1
 - The coilgun Earth's nameplate reads UEN Second Opinion. The ship-choice button, the watch-battle tip, the end screen and the after-action line use that name too. The Dagger and the Mars frigate keep theirs. The sim still calls that class Lance.
 
