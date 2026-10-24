@@ -1006,7 +1006,7 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_C: chase = not chase
 			KEY_B: fc_lines = not fc_lines
 			KEY_L: laser_beams = not laser_beams
-			KEY_F4:
+			KEY_F, KEY_F4:   # F as well: on a Mac keyboard F4 is a system key unless fn is held
 				Settings.set_show_fps(not Settings.show_fps)
 				if fps_meter: fps_meter.visible = Settings.show_fps
 			KEY_V: _toggle_plot()

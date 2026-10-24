@@ -46,9 +46,6 @@ func _build_menu() -> void:
 	var t := UI.label("TDC", 64, UI.PRI)
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(t)
-	var st := UI.label("Earth and Mars, 2300. One battle above Mars.", 15, UI.MUTED)
-	st.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	v.add_child(st)
 	# The demo's numbers are tuned for play, not taken from the game's physics (docs/movement_vs_framework.md).
 	var note := UI.label("GAMIFIED DEMO · ship performance, weapons and damage are tuned for play and are not representative of the final simulation", 12, UI.PRI)
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER

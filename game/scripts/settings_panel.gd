@@ -128,7 +128,7 @@ func _build() -> void:
 		var b := UI.button("On" if shown else "Off", func(): _set_fps_read(shown), UI.PRI, 80)
 		row.add_child(b)
 		_fpsread_btns.append(b)
-	v.add_child(_note("FPS, frame time and a 1% low. Off by default. F4 switches it during play."))
+	v.add_child(_note("FPS, frame time and a 1% low. Off by default. F (or F4) switches it during play."))
 	var chk := Check.new("Show the how-to-play briefing when the game starts", Settings.show_briefing)
 	chk.name = "BriefingCheck"
 	chk.toggled.connect(func(on: bool): Settings.set_show_briefing(on))

@@ -3,6 +3,12 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.17.1
+- **F switches the frame-time counter**, as F4 does. On a Mac keyboard F4 is a system key unless fn is held, so the
+  counter could not be opened in battle. Settings says so.
+- The main menu no longer has the line "Earth and Mars, 2300. One battle above Mars." under the title, and the
+  game's description no longer says "one battle above Mars".
+
 ## v0.17.0
 - **macOS test build.** CI also builds a universal Mac app (Apple Silicon and Intel), `TDC-Demo-macos` on each run,
   with its SHA-256. It is signed ad hoc only and not notarized, so macOS blocks it the first time: System Settings >
