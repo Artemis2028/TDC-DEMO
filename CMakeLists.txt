@@ -8,6 +8,11 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 add_library(tdc_sim STATIC sim/src/battle.cpp)
 target_include_directories(tdc_sim PUBLIC sim/include)
+# Apple clang fuses a*b+c into one FMA on arm64 by default, which changes the last bits of every battle. Keep the
+# rounding of the other builds.
+if(APPLE)
+  target_compile_options(tdc_sim PUBLIC -ffp-contract=off)
+endif()
 
 option(TDC_TESTS "Build the rules tests" ON)
 if(TDC_TESTS)
@@ -26,7 +31,9 @@ if(TDC_EXTENSION)
   set_target_properties(tdc_demo PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON
                         LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/game/bin RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/game/bin
                         LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/game/bin RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/game/bin)
-  if(NOT MSVC)
+  if(APPLE)
+    target_link_options(tdc_demo PRIVATE -Wl,-x -Wl,-dead_strip)   # Apple's linker has no -s: strip local symbols
+  elseif(NOT MSVC)
     target_link_options(tdc_demo PRIVATE -s)
   endif()
 endif()
