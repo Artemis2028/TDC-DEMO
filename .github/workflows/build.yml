@@ -64,3 +64,59 @@ jobs:
         with:
           name: TDC-Demo-windows
           path: export/
+
+  # Test build for Macs: one universal app (Apple Silicon and Intel), signed ad hoc only, not notarized. macOS blocks
+  # it the first time; System Settings > Privacy & Security > Open Anyway lets it run.
+  macos:
+    runs-on: macos-latest
+    env:
+      GODOT: 4.7-stable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build the rules sim, its tests and the Godot extension (universal)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          cmake --build build -j 4
+          ctest --test-dir build --output-on-failure
+          lipo -info game/bin/libtdc_demo.dylib
+
+      - name: Fetch Godot and its export templates
+        run: |
+          curl -sSfL -o godot.zip "https://github.com/godotengine/godot/releases/download/$GODOT/Godot_v${GODOT}_macos.universal.zip"
+          unzip -q godot.zip -d godot
+          curl -sSfL -o templates.zip "https://github.com/godotengine/godot/releases/download/$GODOT/Godot_v${GODOT}_export_templates.tpz"
+          unzip -q templates.zip -d tpl
+          dest="$HOME/Library/Application Support/Godot/export_templates/${GODOT/-/.}"
+          mkdir -p "$dest"
+          mv tpl/templates/* "$dest"
+
+      - name: Stamp the build number and commit into the version shown in the game
+        run: |
+          b="${{ github.run_number }} (${GITHUB_SHA:0:7})"
+          perl -pi -e "s/const BUILD := \"dev\"/const BUILD := \"$b\"/" game/scripts/version.gd
+          grep "const BUILD" game/scripts/version.gd
+
+      - name: Export the macOS build
+        run: |
+          mkdir -p export
+          g="$PWD/godot/Godot.app/Contents/MacOS/Godot"
+          "$g" --headless --path game --import
+          "$g" --headless --path game --export-release "macOS" ../export/TDC-Demo-macOS.zip
+          cp LICENSE.txt export/
+          ls -l export
+
+      - name: Write the SHA-256 hash of the zip
+        run: |
+          h=$(shasum -a 256 export/TDC-Demo-macOS.zip | cut -d' ' -f1)
+          v=$(sed -n 's/^const NUMBER := "\(.*\)"/\1/p' game/scripts/version.gd)
+          printf 'TDC Demo v%s · build %s (%s) · macOS test build\n\nSHA-256  %s  TDC-Demo-macOS.zip\n' "$v" "${{ github.run_number }}" "${GITHUB_SHA:0:7}" "$h" > export/SHA256.txt
+          cat export/SHA256.txt
+          printf '### TDC-Demo-macOS.zip SHA-256\n`%s`\n' "$h" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TDC-Demo-macos
+          path: export/

@@ -4,6 +4,10 @@ The version is shown on the main menu (bottom right), in the HUD's top-left corn
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
 ## v0.17.0
+- **macOS test build.** CI also builds a universal Mac app (Apple Silicon and Intel), `TDC-Demo-macos` on each run,
+  with its SHA-256. It is signed ad hoc only and not notarized, so macOS blocks it the first time: System Settings >
+  Privacy & Security > Open Anyway. The textures are also imported as ETC2/ASTC, which Apple Silicon needs; the
+  Windows build is unchanged. Apple's compiler is told not to fuse multiply-adds, so a Mac battle rounds like the others.
 - The battle screen is the same picture. The flight deck was one script; it is now a battle host (`main.gd`), the panels (`battle_hud.gd`), the frame around the view (`view_overlay.gd`) and the menu and end screen (`battle_menu.gd`). The host still owns the sim, the camera and the ships.
 - The cut corners, the rule and the view title are drawn once, and again only when the title or the help line changes. The target bracket and the tracers still follow the camera every frame. Caption columns share one canvas item each, and each item draws one font and then the other. On the same bench the HUD's canvas draws went from 438 to 423, and the frame's draw calls from 1,243 to 1,228.
 - The EO scope copy still aims its turrets and its sensor. It no longer poses the ammo-feed hose bones, which do not read in that small picture. The ships in the battle still do.

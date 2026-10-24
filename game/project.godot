@@ -21,4 +21,5 @@ window/stretch/aspect="keep"
 
 [rendering]
 anti_aliasing/quality/msaa_3d=2
+textures/vram_compression/import_etc2_astc=true
 environment/defaults/default_clear_color=Color(0.027, 0.043, 0.063, 1)

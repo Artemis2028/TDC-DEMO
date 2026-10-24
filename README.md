@@ -10,7 +10,7 @@ written in C++ and compiled into a Godot extension. It does not contain the TDC 
 | `sim/` | The demo rules in plain C++ (no Godot), with tests |
 | `extension/` | The Godot extension that exposes the rules (`DemoBattle`), built on `godot-cpp` |
 | `game/` | The Godot project: HUD, ship models, menus (GDScript, exported as compressed binary tokens) |
-| `.github/workflows/build.yml` | Builds and tests on Windows and exports `TDC-Demo.exe` as a downloadable artifact |
+| `.github/workflows/build.yml` | Builds and tests on Windows and macOS; exports `TDC-Demo.exe` and a macOS test build (`TDC-Demo-macOS.zip`, not notarized) as downloadable artifacts |
 
 ## What is in the demo
 
