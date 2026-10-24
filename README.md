@@ -33,6 +33,9 @@ cmake --build build -j
 ctest --test-dir build
 ```
 
+This builds the extension for the editor (godot-cpp's default `template_debug`). For an exported release build add
+`-DGODOTCPP_TARGET=template_release`, as CI does: a debug extension in a release export corrupts the heap.
+
 The extension lands in `game/bin/`; open `game/` in Godot 4.5 or later (CI exports with 4.7).
 
 ## Balance

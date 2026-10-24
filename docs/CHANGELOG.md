@@ -8,6 +8,10 @@ CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so
   with its SHA-256. It is signed ad hoc only and not notarized, so macOS blocks it the first time: System Settings >
   Privacy & Security > Open Anyway. The textures are also imported as ETC2/ASTC, which Apple Silicon needs; the
   Windows build is unchanged. Apple's compiler is told not to fuse multiply-adds, so a Mac battle rounds like the others.
+- **Fix: heap corruption in exported builds (Windows and Mac).** CI built the extension's godot-cpp as `template_debug`
+  but exported with the release template. Debug godot-cpp leaves allocation padding to the engine, a release engine
+  adds none, so the extension's arrays wrote their header in front of their memory. The Mac build stopped at launch
+  ("memory corruption of free block"); Windows ran on with the damage. CI now builds godot-cpp as `template_release`.
 - The battle screen is the same picture. The flight deck was one script; it is now a battle host (`main.gd`), the panels (`battle_hud.gd`), the frame around the view (`view_overlay.gd`) and the menu and end screen (`battle_menu.gd`). The host still owns the sim, the camera and the ships.
 - The cut corners, the rule and the view title are drawn once, and again only when the title or the help line changes. The target bracket and the tracers still follow the camera every frame. Caption columns share one canvas item each, and each item draws one font and then the other. On the same bench the HUD's canvas draws went from 438 to 423, and the frame's draw calls from 1,243 to 1,228.
 - The EO scope copy still aims its turrets and its sensor. It no longer poses the ammo-feed hose bones, which do not read in that small picture. The ships in the battle still do.
