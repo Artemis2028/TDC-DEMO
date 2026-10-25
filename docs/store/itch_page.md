@@ -23,8 +23,9 @@ the numbers again if the balance changes.
 
 ## Uploads
 
-- `TDC-Demo-windows.zip` from the CI run of the launch build on `main`: contains `TDC-Demo.exe`, `LICENSE.txt` and
-  `SHA256.txt`. Mark it **Windows** and **Executable**.
+- The Windows download from the CI run of the launch build on `main`, unzipped once and zipped again as it is:
+  `TDC-Demo.exe` and `tdc_demo.dll` (the battle rules; the game cannot run a battle without it, so keep it next to
+  the exe) plus `SHA256.txt`. Mark it **Windows** and **Executable**.
 - Optional: put the SHA-256 from `SHA256.txt` in the upload's display name or in the description, so players can check
   their download.
 

@@ -1,4 +1,4 @@
-"""Turn Rafael's Dagger concept model (art/source/Dagger_Earth_Destroyer.blend) into the game's Earth ship.
+"""Turn the Dagger concept model (art/source/Dagger_Earth_Destroyer.blend) into the game's Earth ship.
 
 Run:  python art/import_dagger.py [--blend]     (needs the bpy package; or blender -b --python art/import_dagger.py)
 

@@ -3,6 +3,10 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.17.2
+- The builds carry no personal name. `LICENSE.txt` is no longer shipped (or kept in the repository), and the Mac
+  app's copyright field is empty. The README and the Dagger import script call the model "the Dagger concept model".
+
 ## v0.17.1
 - **F switches the frame-time counter**, as F4 does. On a Mac keyboard F4 is a system key unless fn is held, so the
   counter could not be opened in battle. Settings says so.

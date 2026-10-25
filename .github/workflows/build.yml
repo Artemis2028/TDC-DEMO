@@ -50,7 +50,6 @@ jobs:
           $g = (Get-ChildItem godot -Filter *console.exe -Recurse)[0].FullName
           & $g --headless --path game --import
           & $g --headless --path game --export-release "Windows Desktop" ../export/TDC-Demo.exe
-          Copy-Item LICENSE.txt export/
           Get-ChildItem export
 
       - name: Write the SHA-256 hash of the exe (to match against VirusTotal scans)
@@ -108,7 +107,6 @@ jobs:
           g="$PWD/godot/Godot.app/Contents/MacOS/Godot"
           "$g" --headless --path game --import
           "$g" --headless --path game --export-release "macOS" ../export/TDC-Demo-macOS.zip
-          cp LICENSE.txt export/
           ls -l export
 
       - name: Write the SHA-256 hash of the zip

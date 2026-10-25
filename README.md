@@ -53,7 +53,7 @@ at least 20 points ahead of it. Up to v0.11.1 the balance was tuned AI against A
 
 ## Ship models
 
-Earth flies two hulls. The lasers-only Dagger is Rafael's concept model (`art/source/Dagger_Earth_Destroyer.blend`),
+Earth flies two hulls. The lasers-only Dagger is the Dagger concept model (`art/source/Dagger_Earth_Destroyer.blend`),
 converted for the game by `art/import_dagger.py` (turns it to game axes, makes the radiator wings foldable, adds the
 three laser barbettes, OMS blisters and coilgun, joins parts by material) and exported to `game/models/earth.glb`.
 The Lance, the Earth ship that carries the spinal coilgun, is the Arbiter TDC v18f hull (`art/source/arbiter-TDC_v18f.glb`).
