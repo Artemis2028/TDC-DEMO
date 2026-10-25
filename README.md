@@ -10,7 +10,7 @@ written in C++ and compiled into a Godot extension. It does not contain the TDC 
 | `sim/` | The demo rules in plain C++ (no Godot), with tests |
 | `extension/` | The Godot extension that exposes the rules (`DemoBattle`), built on `godot-cpp` |
 | `game/` | The Godot project: HUD, ship models, menus (GDScript, exported as compressed binary tokens) |
-| `.github/workflows/build.yml` | Builds and tests on Windows and exports `TDC-Demo.exe` as a downloadable artifact |
+| `.github/workflows/build.yml` | Builds and tests on Windows and macOS; exports `TDC-Demo.exe` and a macOS test build (`TDC-Demo-macOS.zip`, not notarized) as downloadable artifacts |
 
 ## What is in the demo
 
@@ -32,6 +32,9 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build
 ```
+
+This builds the extension for the editor (godot-cpp's default `template_debug`). For an exported release build add
+`-DGODOTCPP_TARGET=template_release`, as CI does: a debug extension in a release export corrupts the heap.
 
 The extension lands in `game/bin/`; open `game/` in Godot 4.5 or later (CI exports with 4.7).
 

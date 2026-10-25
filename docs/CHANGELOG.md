@@ -3,7 +3,23 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.17.1
+- **F switches the frame-time counter**, as F4 does. On a Mac keyboard F4 is a system key unless fn is held, so the
+  counter could not be opened in battle. Settings says so.
+- The main menu no longer has the line "Earth and Mars, 2300. One battle above Mars." under the title, and the
+  game's description no longer says "one battle above Mars".
+- The words "gamified demo" are gone from the main menu note and the briefing. Both still say the numbers are tuned
+  for play and are not the final simulation.
+
 ## v0.17.0
+- **macOS test build.** CI also builds a universal Mac app (Apple Silicon and Intel), `TDC-Demo-macos` on each run,
+  with its SHA-256. It is signed ad hoc only and not notarized, so macOS blocks it the first time: System Settings >
+  Privacy & Security > Open Anyway. The textures are also imported as ETC2/ASTC, which Apple Silicon needs; the
+  Windows build is unchanged. Apple's compiler is told not to fuse multiply-adds, so a Mac battle rounds like the others.
+- **Fix: heap corruption in exported builds (Windows and Mac).** CI built the extension's godot-cpp as `template_debug`
+  but exported with the release template. Debug godot-cpp leaves allocation padding to the engine, a release engine
+  adds none, so the extension's arrays wrote their header in front of their memory. The Mac build stopped at launch
+  ("memory corruption of free block"); Windows ran on with the damage. CI now builds godot-cpp as `template_release`.
 - The battle screen is the same picture. The flight deck was one script; it is now a battle host (`main.gd`), the panels (`battle_hud.gd`), the frame around the view (`view_overlay.gd`) and the menu and end screen (`battle_menu.gd`). The host still owns the sim, the camera and the ships.
 - The cut corners, the rule and the view title are drawn once, and again only when the title or the help line changes. The target bracket and the tracers still follow the camera every frame. Caption columns share one canvas item each, and each item draws one font and then the other. On the same bench the HUD's canvas draws went from 438 to 423, and the frame's draw calls from 1,243 to 1,228.
 - The EO scope copy still aims its turrets and its sensor. It no longer poses the ammo-feed hose bones, which do not read in that small picture. The ships in the battle still do.
