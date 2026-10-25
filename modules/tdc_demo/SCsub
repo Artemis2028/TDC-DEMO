@@ -1,0 +1,14 @@
+#!/usr/bin/env python
+Import("env")
+Import("env_modules")
+
+env_tdc = env_modules.Clone()
+env_tdc.Prepend(CPPPATH=[Dir("../../sim/include").abspath])
+# Same rounding as the CMake builds: Apple clang would otherwise fuse a*b+c into one FMA on arm64 and change the last
+# bits of every battle. MSVC does not contract under Godot's /fp:strict.
+if not env.msvc:
+    env_tdc.Append(CCFLAGS=["-ffp-contract=off"])
+
+# The sources live outside the engine tree (sim/ and extension/src/); the two .cpp files here include them, so the
+# objects land in this folder and SCons still tracks the included sources.
+env_tdc.add_source_files(env.modules_sources, "*.cpp")

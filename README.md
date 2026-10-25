@@ -3,12 +3,14 @@
 The public playable demo of TDC: one battle above Mars, Earth against Mars, 2300.
 
 The demo runs on its own simplified rules ("gamified" values: armour points, damage per shot, a 0-100 heat bar),
-written in C++ and compiled into a Godot extension. It does not contain the TDC physics engine or its data.
+written in C++ and compiled into the game's engine (a GDExtension in the editor). It does not contain the TDC physics
+engine or its data.
 
 | Folder | What it is |
 | --- | --- |
 | `sim/` | The demo rules in plain C++ (no Godot), with tests |
-| `extension/` | The Godot extension that exposes the rules (`DemoBattle`), built on `godot-cpp` |
+| `extension/` | The bridge that exposes the rules to Godot (`DemoBattle`); built on `godot-cpp` as the GDExtension the editor loads |
+| `modules/tdc_demo/` | The same bridge as a Godot engine module, built into the export templates so the game is one executable |
 | `game/` | The Godot project: HUD, ship models, menus (GDScript, exported as compressed binary tokens) |
 | `.github/workflows/build.yml` | Builds and tests on Windows and macOS; exports `TDC-Demo.exe` and a macOS test build (`TDC-Demo-macOS.zip`, not notarized) as downloadable artifacts |
 
@@ -26,6 +28,8 @@ written in C++ and compiled into a Godot extension. It does not contain the TDC 
 
 ## Building
 
+### Rules, tests and the editor
+
 ```
 git submodule update --init
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -33,10 +37,43 @@ cmake --build build -j
 ctest --test-dir build
 ```
 
-This builds the extension for the editor (godot-cpp's default `template_debug`). For an exported release build add
-`-DGODOTCPP_TARGET=template_release`, as CI does: a debug extension in a release export corrupts the heap.
+This builds the rules tests and the GDExtension (godot-cpp's default `template_debug`, which suits the editor). The
+extension lands in `game/bin/`; open `game/` in a stock Godot 4.5 or later (CI exports with 4.7). The editor loads the
+extension through `game/tdc_demo.gdextension`; the export leaves both out.
 
-The extension lands in `game/bin/`; open `game/` in Godot 4.5 or later (CI exports with 4.7).
+### The exported game: one executable
+
+Godot cannot load an extension library from inside the game's embedded `.pck`, so with an extension the exe needed a
+`tdc_demo.dll` (or `libtdc_demo.dylib`) beside it. Instead, the export uses custom release templates: the Godot engine,
+built from source with `modules/tdc_demo` compiled in. The module and the extension share one bridge source
+(`extension/src/demo_battle.*`; `#ifdef GDEXTENSION` picks the headers), and register the same `DemoBattle` class and
+methods, so the scripts work with either. `game/export_presets.cfg` points at the templates in `templates/` (beside
+`game/`, not in git) and excludes `tdc_demo.gdextension` and `bin/`.
+
+CI builds the templates on every push (`.github/workflows/build.yml`), from the source of the same Godot version it
+exports with (`GODOT: 4.7-stable`; change it in both jobs to move to another version). The engine's objects are kept
+in an SCons cache, so a push recompiles the module and relinks; only the first build on a branch, or a new Godot
+version, compiles the engine (about an hour). CI then exports with the stock editor, checks that the Windows export is
+one file, plays 300 frames of a battle headless in the exported game (`--bench`), and uploads the exe with
+`SHA256.txt`.
+
+To build the Windows template yourself (Python, `pip install scons`, Visual Studio with C++):
+
+```
+git clone --depth 1 --branch 4.7-stable https://github.com/godotengine/godot.git godot-src
+cd godot-src
+scons platform=windows target=template_release arch=x86_64 debug_symbols=no custom_modules=../modules
+mkdir ..\templates
+copy bin\godot.windows.template_release.x86_64.exe ..\templates\windows_release_x86_64.exe
+```
+
+For the Mac, build `platform=macos` for `arch=arm64` and `arch=x86_64`, join them with `lipo`, and zip them as
+`macos_template.app` (the "Build the macOS release template" step in the workflow does exactly this). The templates
+must be `target=template_release`: release engine code throughout, as with the extension (a debug godot-cpp in a
+release engine corrupted the heap, v0.17.0).
+
+A custom editor (`target=editor` with the same `custom_modules=../modules`) also has `DemoBattle` built in. If you use
+one, delete `game/bin/` or `game/tdc_demo.gdextension` locally, or the extension registers the class a second time.
 
 ## Balance
 
