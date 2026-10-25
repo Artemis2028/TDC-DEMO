@@ -8,6 +8,8 @@ CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so
   counter could not be opened in battle. Settings says so.
 - The main menu no longer has the line "Earth and Mars, 2300. One battle above Mars." under the title, and the
   game's description no longer says "one battle above Mars".
+- The words "gamified demo" are gone from the main menu note and the briefing. Both still say the numbers are tuned
+  for play and are not the final simulation.
 
 ## v0.17.0
 - **macOS test build.** CI also builds a universal Mac app (Apple Silicon and Intel), `TDC-Demo-macos` on each run,

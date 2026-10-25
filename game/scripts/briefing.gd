@@ -97,7 +97,7 @@ func _build() -> void:
 	_title.position = Vector2(336, 80)
 	_title.size = Vector2(776, 40)
 	add_child(_title)
-	_sub = UI.label("A gamified demo: speeds, weapons and damage are tuned for play. You command the cruiser; the enemy is ahead.", 13, UI.MUTED)
+	_sub = UI.label("Speeds, weapons and damage are tuned for play. You command the cruiser; the enemy is ahead.", 13, UI.MUTED)
 	_sub.position = Vector2(336, 118)
 	_sub.size = Vector2(776, 22)
 	add_child(_sub)

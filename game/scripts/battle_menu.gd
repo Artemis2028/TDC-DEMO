@@ -47,7 +47,7 @@ func _build_menu() -> void:
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(t)
 	# The demo's numbers are tuned for play, not taken from the game's physics (docs/movement_vs_framework.md).
-	var note := UI.label("GAMIFIED DEMO · ship performance, weapons and damage are tuned for play and are not representative of the final simulation", 12, UI.PRI)
+	var note := UI.label("Ship performance, weapons and damage are tuned for play and are not representative of the final simulation", 12, UI.PRI)
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.custom_minimum_size.x = 400
