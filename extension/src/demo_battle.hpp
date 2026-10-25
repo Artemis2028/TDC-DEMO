@@ -1,7 +1,18 @@
 #pragma once
+// One bridge, two builds. godot-cpp defines GDEXTENSION: that is the extension the editor loads (game/bin/). Without
+// it this file is compiled into the engine by the module in modules/tdc_demo, which is how the exported game gets it.
+#ifdef GDEXTENSION
 #include <godot_cpp/classes/ref_counted.hpp>
+#include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/packed_float64_array.hpp>
+#include <godot_cpp/variant/vector2.hpp>
+#else
+#include "core/object/class_db.h"
+#include "core/object/ref_counted.h"
+#include "core/variant/variant.h"
+#endif
 #include <memory>
 
 #include "tdc/battle.hpp"

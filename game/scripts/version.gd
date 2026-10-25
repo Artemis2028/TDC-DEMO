@@ -5,7 +5,7 @@ class_name Version
 ## BUILD is stamped by the CI build (.github/workflows/build.yml): the run number and the commit. "dev" means a
 ## local, unstamped build.
 
-const NUMBER := "0.17.2"
+const NUMBER := "0.18.0"
 const BUILD := "dev"
 
 ## "v0.9.0 · build 54 (1a2b3c4)", or "v0.9.0 · dev" for a local build.

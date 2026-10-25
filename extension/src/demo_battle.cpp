@@ -1,9 +1,5 @@
 #include "demo_battle.hpp"
 
-#include <godot_cpp/core/class_db.hpp>
-#include <godot_cpp/variant/packed_float64_array.hpp>
-#include <godot_cpp/variant/vector2.hpp>
-
 using namespace godot;
 
 // Dictionary keys built once: turning a C string into a Godot String on every key of every call was most of

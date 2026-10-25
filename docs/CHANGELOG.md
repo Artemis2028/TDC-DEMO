@@ -3,6 +3,17 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.18.0
+- **The Windows build is one file.** `TDC-Demo.exe` no longer needs `tdc_demo.dll` beside it (and the Mac app carries
+  no `libtdc_demo.dylib`). The rules bridge, `DemoBattle`, is now also a Godot engine module (`modules/tdc_demo`), and
+  CI builds the Windows and Mac release templates from the Godot 4.7 source with it compiled in. The export uses those
+  templates and leaves the extension out. The Windows download is the exe and `SHA256.txt`.
+- The module and the editor's GDExtension share one bridge source and register the same class and methods, so the
+  scripts did not change. The editor still loads the extension from `game/bin/`.
+- CI keeps the engine's compiled objects between runs, so a push rebuilds only the module and relinks. It now also
+  plays 300 frames of a battle headless in the exported Windows exe and Mac app, and fails if the battle does not run.
+  The README's build section explains the setup.
+
 ## v0.17.2
 - The builds carry no personal name. `LICENSE.txt` is no longer shipped (or kept in the repository), and the Mac
   app's copyright field is empty. The README and the Dagger import script call the model "the Dagger concept model".

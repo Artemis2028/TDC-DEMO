@@ -4,36 +4,88 @@ on:
   push:
   workflow_dispatch:
 
+# The exported game is one executable: the rules bridge (DemoBattle) is built into the engine as a module
+# (modules/tdc_demo), and the export uses release templates built here from the source of the Godot version we export
+# with. The engine objects are kept in an SCons cache, so a normal push recompiles only the module and relinks.
+# The GDExtension is still built: the stock editor loads it, and building it keeps the shared bridge source
+# (extension/src/) compiling both ways. The export leaves it out (exclude_filter in game/export_presets.cfg).
+
 jobs:
   windows:
     runs-on: windows-latest
+    timeout-minutes: 180
     env:
       GODOT: 4.7-stable
+      SCONS_CACHE_MSVC_CONFIG: true
+      PYTHONIOENCODING: utf8
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # The exe is a release export, so godot-cpp must be built as template_release. A template_debug godot-cpp
-      # expects the engine to pad its allocations, which a release engine does not, and its arrays then write
-      # their header in front of the block (heap corruption; macOS stops at launch, Windows may not notice).
+      # The extension is built as template_release: a template_debug godot-cpp in a release engine corrupts the heap
+      # (it expects allocation padding a release engine does not add).
       - name: Build the rules sim, its tests and the Godot extension
         run: |
           cmake -S . -B build -DGODOTCPP_TARGET=template_release
           cmake --build build --config Release -j 4
           ctest --test-dir build -C Release --output-on-failure
 
-      - name: Fetch Godot and its export templates
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+
+      - name: Fetch the Godot source and SCons
+        run: |
+          python -m pip install scons==4.10.1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git clone --depth 1 --branch $env:GODOT https://github.com/godotengine/godot.git godot-src
+
+      - name: Restore the engine build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .scons_cache
+          key: godot-${{ env.GODOT }}-windows-template_release-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: godot-${{ env.GODOT }}-windows-template_release-
+
+      # The optional SDKs Godot's own CI builds its Windows template with; any that fails to download is left out.
+      # Run from pwsh, not Git Bash: under MSYSTEM the scripts install into bin/build_deps, where MSVC builds don't look.
+      - name: Fetch the engine's optional SDKs (Direct3D 12, ANGLE, AccessKit)
+        id: sdk
+        working-directory: godot-src
+        run: |
+          foreach ($s in @(@("d3d12_sdk_windows", "d3d12"), @("angle", "angle"), @("accesskit", "accesskit"))) {
+            python misc/scripts/install_$($s[0]).py
+            if ($LASTEXITCODE -eq 0) { "$($s[1])=yes" >> $env:GITHUB_OUTPUT }
+            else { "::warning::$($s[0]) failed to install; building without it."; "$($s[1])=no" >> $env:GITHUB_OUTPUT }
+          }
+          python misc/scripts/install_winrt.py
+          if ($LASTEXITCODE -ne 0) { "::warning::WinRT components failed to install." }
+          exit 0
+
+      - name: Build the Windows release template with the DemoBattle module
+        working-directory: godot-src
+        run: |
+          scons platform=windows target=template_release arch=x86_64 debug_symbols=no custom_modules=../modules cache_path=../.scons_cache redirect_build_objects=no d3d12=${{ steps.sdk.outputs.d3d12 }} angle=${{ steps.sdk.outputs.angle }} accesskit=${{ steps.sdk.outputs.accesskit }}
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force ../templates | Out-Null
+          Copy-Item bin/godot.windows.template_release.x86_64.exe ../templates/windows_release_x86_64.exe
+          Get-ChildItem ../templates
+
+      - name: Save the engine build cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .scons_cache
+          key: godot-${{ env.GODOT }}-windows-template_release-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Fetch the Godot editor (used only to export)
         shell: pwsh
         run: |
           $v = "$env:GODOT"
           Invoke-WebRequest "https://github.com/godotengine/godot/releases/download/$v/Godot_v${v}_win64.exe.zip" -OutFile godot.zip
           Expand-Archive godot.zip -DestinationPath godot
-          Invoke-WebRequest "https://github.com/godotengine/godot/releases/download/$v/Godot_v${v}_export_templates.tpz" -OutFile templates.zip
-          Expand-Archive templates.zip -DestinationPath tpl
-          $dest = "$env:APPDATA\Godot\export_templates\$($v -replace '-', '.')"
-          New-Item -ItemType Directory -Force $dest | Out-Null
-          Move-Item tpl\templates\* $dest
 
       - name: Stamp the build number and commit into the version shown in the game
         shell: pwsh
@@ -51,6 +103,21 @@ jobs:
           & $g --headless --path game --import
           & $g --headless --path game --export-release "Windows Desktop" ../export/TDC-Demo.exe
           Get-ChildItem export
+          $extra = Get-ChildItem export | Where-Object Name -ne "TDC-Demo.exe"
+          if ($extra) { throw "The export should be one exe; also found: $($extra.Name -join ', ')" }
+
+      # Plays 300 frames of a live battle headless (main.gd --bench) in the exported exe, so the module must be in it
+      # and the rules must run. The log goes outside export/ so the artifact stays one exe.
+      - name: Run a battle in the exported exe
+        shell: pwsh
+        run: |
+          $log = "$env:RUNNER_TEMP\smoke.log"
+          $p = Start-Process export/TDC-Demo.exe -ArgumentList "--headless", "--log-file", "`"$log`"", "--", "--bench", "300", "--speed", "6" -PassThru
+          if (-not $p.WaitForExit(300000)) { $p.Kill(); Get-Content $log -ErrorAction SilentlyContinue; throw "The battle did not finish in 5 minutes" }
+          Get-Content $log
+          if ($p.ExitCode -ne 0) { throw "The exe exited with code $($p.ExitCode)" }
+          if (-not (Select-String -Path $log -Pattern "^BENCH" -Quiet)) { throw "No BENCH line: the battle did not run" }
+          if (Select-String -Path $log -Pattern "SCRIPT ERROR" -Quiet) { throw "Script errors in the log" }
 
       - name: Write the SHA-256 hash of the exe (to match against VirusTotal scans)
         shell: pwsh
@@ -71,6 +138,7 @@ jobs:
   # it the first time; System Settings > Privacy & Security > Open Anyway lets it run.
   macos:
     runs-on: macos-latest
+    timeout-minutes: 180
     env:
       GODOT: 4.7-stable
     steps:
@@ -85,15 +153,62 @@ jobs:
           ctest --test-dir build --output-on-failure
           lipo -info game/bin/libtdc_demo.dylib
 
-      - name: Fetch Godot and its export templates
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+
+      - name: Fetch the Godot source and SCons
+        run: |
+          python -m pip install scons==4.10.1
+          git clone --depth 1 --branch "$GODOT" https://github.com/godotengine/godot.git godot-src
+
+      - name: Restore the engine build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .scons_cache
+          key: godot-${{ env.GODOT }}-macos-template_release-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: godot-${{ env.GODOT }}-macos-template_release-
+
+      # The optional SDKs Godot's own CI builds its macOS template with; any that fails to install is left out.
+      - name: Fetch the engine's optional SDKs (Vulkan/MoltenVK, ANGLE, AccessKit)
+        id: sdk
+        working-directory: godot-src
+        run: |
+          if sh misc/scripts/install_vulkan_sdk_macos.sh; then echo "vulkan=yes" >> "$GITHUB_OUTPUT"
+          else echo "::warning::Vulkan SDK failed to install; building without it."; echo "vulkan=no" >> "$GITHUB_OUTPUT"; fi
+          for s in angle accesskit; do
+            if python misc/scripts/install_$s.py; then echo "$s=yes" >> "$GITHUB_OUTPUT"
+            else echo "::warning::$s failed to install; building without it."; echo "$s=no" >> "$GITHUB_OUTPUT"; fi
+          done
+
+      - name: Build the macOS release template with the DemoBattle module (universal)
+        working-directory: godot-src
+        run: |
+          for arch in arm64 x86_64; do
+            scons platform=macos target=template_release arch=$arch debug_symbols=no custom_modules=../modules cache_path=../.scons_cache redirect_build_objects=no vulkan=${{ steps.sdk.outputs.vulkan }} angle=${{ steps.sdk.outputs.angle }} accesskit=${{ steps.sdk.outputs.accesskit }}
+          done
+          lipo -create bin/godot.macos.template_release.arm64 bin/godot.macos.template_release.x86_64 -output bin/godot.macos.template_release.universal
+          strip bin/godot.macos.template_release.universal
+          # The archive the exporter expects: macos_template.app with the binary under its standard name.
+          rm -rf ../templates && mkdir -p ../templates && cp -R misc/dist/macos_template.app ../templates/
+          mkdir -p ../templates/macos_template.app/Contents/MacOS
+          cp bin/godot.macos.template_release.universal ../templates/macos_template.app/Contents/MacOS/godot_macos_release.universal
+          chmod +x ../templates/macos_template.app/Contents/MacOS/godot_macos_release.universal
+          (cd ../templates && zip -q -9 -r macos.zip macos_template.app && rm -rf macos_template.app)
+          ls -l ../templates
+
+      - name: Save the engine build cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .scons_cache
+          key: godot-${{ env.GODOT }}-macos-template_release-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Fetch the Godot editor (used only to export)
         run: |
           curl -sSfL -o godot.zip "https://github.com/godotengine/godot/releases/download/$GODOT/Godot_v${GODOT}_macos.universal.zip"
           unzip -q godot.zip -d godot
-          curl -sSfL -o templates.zip "https://github.com/godotengine/godot/releases/download/$GODOT/Godot_v${GODOT}_export_templates.tpz"
-          unzip -q templates.zip -d tpl
-          dest="$HOME/Library/Application Support/Godot/export_templates/${GODOT/-/.}"
-          mkdir -p "$dest"
-          mv tpl/templates/* "$dest"
 
       - name: Stamp the build number and commit into the version shown in the game
         run: |
@@ -108,6 +223,20 @@ jobs:
           "$g" --headless --path game --import
           "$g" --headless --path game --export-release "macOS" ../export/TDC-Demo-macOS.zip
           ls -l export
+          if unzip -l export/TDC-Demo-macOS.zip | grep tdc_demo; then echo "The app should carry no extension library"; exit 1; fi
+
+      # Plays 300 frames of a live battle headless (main.gd --bench) in the exported app, as on Windows.
+      - name: Run a battle in the exported app
+        run: |
+          mkdir -p "$RUNNER_TEMP/app" && unzip -q export/TDC-Demo-macOS.zip -d "$RUNNER_TEMP/app"
+          exe=$(find "$RUNNER_TEMP/app" -path '*.app/Contents/MacOS/*' -type f | head -1)
+          log="$RUNNER_TEMP/smoke.log"
+          code=0
+          perl -e 'alarm 300; exec @ARGV' "$exe" --headless --log-file "$log" -- --bench 300 --speed 6 || code=$?
+          cat "$log"
+          [ "$code" -eq 0 ] || { echo "The app exited with code $code"; exit 1; }
+          grep -q '^BENCH' "$log" || { echo "No BENCH line: the battle did not run"; exit 1; }
+          if grep -q 'SCRIPT ERROR' "$log"; then echo "Script errors in the log"; exit 1; fi
 
       - name: Write the SHA-256 hash of the zip
         run: |

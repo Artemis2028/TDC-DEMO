@@ -6,3 +6,6 @@ game/bin/
 export/
 *.blend1
 __pycache__/
+/templates/
+/modules/**/*.o
+/modules/**/*.obj
