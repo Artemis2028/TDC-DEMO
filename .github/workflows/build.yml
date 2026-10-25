@@ -49,16 +49,19 @@ jobs:
           restore-keys: godot-${{ env.GODOT }}-windows-template_release-
 
       # The optional SDKs Godot's own CI builds its Windows template with; any that fails to download is left out.
+      # Run from pwsh, not Git Bash: under MSYSTEM the scripts install into bin/build_deps, where MSVC builds don't look.
       - name: Fetch the engine's optional SDKs (Direct3D 12, ANGLE, AccessKit)
         id: sdk
-        shell: bash
         working-directory: godot-src
         run: |
-          for s in d3d12_sdk_windows:d3d12 angle:angle accesskit:accesskit; do
-            if python misc/scripts/install_${s%%:*}.py; then echo "${s##*:}=yes" >> "$GITHUB_OUTPUT"
-            else echo "::warning::${s%%:*} failed to install; building without it."; echo "${s##*:}=no" >> "$GITHUB_OUTPUT"; fi
-          done
-          python misc/scripts/install_winrt.py || echo "::warning::WinRT components failed to install."
+          foreach ($s in @(@("d3d12_sdk_windows", "d3d12"), @("angle", "angle"), @("accesskit", "accesskit"))) {
+            python misc/scripts/install_$($s[0]).py
+            if ($LASTEXITCODE -eq 0) { "$($s[1])=yes" >> $env:GITHUB_OUTPUT }
+            else { "::warning::$($s[0]) failed to install; building without it."; "$($s[1])=no" >> $env:GITHUB_OUTPUT }
+          }
+          python misc/scripts/install_winrt.py
+          if ($LASTEXITCODE -ne 0) { "::warning::WinRT components failed to install." }
+          exit 0
 
       - name: Build the Windows release template with the DemoBattle module
         working-directory: godot-src
