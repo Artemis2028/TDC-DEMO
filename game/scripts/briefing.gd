@@ -27,7 +27,7 @@ const PAGES := [
 		 "text": "Click an enemy part in the view, or a button here. Right-click a button to mark that system degraded or killed."},
 		{"rect": Rect2(320, 80, 788, 668), "box": Rect2(480, 600, BOX_W, 140), "num": 0, "accent": "sec", "outline": true,
 		 "title": "The 3D view",
-		 "text": "Tab: enemy view. V: tactical plot, which shows each side's weapon range. Range is a weapon too. B hides the dashed laser lines (real beams are invisible); Settings sets the default."},
+		 "text": "Tab: enemy view. V: tactical plot, which shows each side's weapon range. Range is a weapon too. B hides the dashed laser lines. L draws the beams themselves (off by default; a real beam in vacuum is invisible). Settings sets both."},
 	]},
 	{"title": "2 of 2 · Read the enemy", "callouts": [
 		{"rect": Rect2(1136, 440, 280, 114), "box": Rect2(784, 420, BOX_W, 156), "num": 3, "accent": "sec",
@@ -97,7 +97,7 @@ func _build() -> void:
 	_title.position = Vector2(336, 80)
 	_title.size = Vector2(776, 40)
 	add_child(_title)
-	_sub = UI.label("A gamified demo: speeds, weapons and damage are tuned for play. You command the cruiser; the enemy is ahead.", 13, UI.MUTED)
+	_sub = UI.label("Speeds, weapons and damage are tuned for play. You command the cruiser; the enemy is ahead.", 13, UI.MUTED)
 	_sub.position = Vector2(336, 118)
 	_sub.size = Vector2(776, 22)
 	add_child(_sub)

@@ -26,6 +26,7 @@ public:
     void set_speed(int64_t index);
     int64_t get_speed() const;
     double get_time() const;
+    double get_fraction() const;
     String get_drop_reason() const;
     int64_t get_winner() const;
     bool get_cruise_allowed() const;
@@ -39,6 +40,7 @@ public:
     void set_roll(int64_t dir);
     void set_mark(int64_t sys, int64_t turret, int64_t mark);
     void set_burn(int64_t burn, double throttle);
+    void set_oms_strafe(int64_t dir);
     void set_radiators(bool extended);
     bool order_repair(int64_t sys);
     void set_auto_repair(bool on);

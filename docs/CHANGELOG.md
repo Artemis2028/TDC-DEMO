@@ -3,6 +3,87 @@
 The version is shown on the main menu (bottom right), in the HUD's top-left corner and in the window title. Each
 CI build adds its run number and commit, e.g. "v0.8.0 · build 52 (68ab2ea)", so two downloads can always be told apart.
 
+## v0.17.1
+- **F switches the frame-time counter**, as F4 does. On a Mac keyboard F4 is a system key unless fn is held, so the
+  counter could not be opened in battle. Settings says so.
+- The main menu no longer has the line "Earth and Mars, 2300. One battle above Mars." under the title, and the
+  game's description no longer says "one battle above Mars".
+- The words "gamified demo" are gone from the main menu note and the briefing. Both still say the numbers are tuned
+  for play and are not the final simulation.
+
+## v0.17.0
+- **macOS test build.** CI also builds a universal Mac app (Apple Silicon and Intel), `TDC-Demo-macos` on each run,
+  with its SHA-256. It is signed ad hoc only and not notarized, so macOS blocks it the first time: System Settings >
+  Privacy & Security > Open Anyway. The textures are also imported as ETC2/ASTC, which Apple Silicon needs; the
+  Windows build is unchanged. Apple's compiler is told not to fuse multiply-adds, so a Mac battle rounds like the others.
+- **Fix: heap corruption in exported builds (Windows and Mac).** CI built the extension's godot-cpp as `template_debug`
+  but exported with the release template. Debug godot-cpp leaves allocation padding to the engine, a release engine
+  adds none, so the extension's arrays wrote their header in front of their memory. The Mac build stopped at launch
+  ("memory corruption of free block"); Windows ran on with the damage. CI now builds godot-cpp as `template_release`.
+- The battle screen is the same picture. The flight deck was one script; it is now a battle host (`main.gd`), the panels (`battle_hud.gd`), the frame around the view (`view_overlay.gd`) and the menu and end screen (`battle_menu.gd`). The host still owns the sim, the camera and the ships.
+- The cut corners, the rule and the view title are drawn once, and again only when the title or the help line changes. The target bracket and the tracers still follow the camera every frame. Caption columns share one canvas item each, and each item draws one font and then the other. On the same bench the HUD's canvas draws went from 438 to 423, and the frame's draw calls from 1,243 to 1,228.
+- The EO scope copy still aims its turrets and its sensor. It no longer poses the ammo-feed hose bones, which do not read in that small picture. The ships in the battle still do.
+- Named glow caps stay in the hull prepare step. The load-time walk still recaps a surface whose peak is over the cap (the nav lights, the strobe, the muzzle and the beam material are), and it leaves a surface that is already under the cap alone. The laser beam on screen is still the unshaded streak.
+- The coil charge discs take their size from the scale the charge clip just wrote, then a fixed 1.15 on that base. They no longer grow if a later edit seeks and multiplies out of step.
+- A burn-through event carries whether it was a beam or a round, and which armour section it went through. The after-action report reads those fields. The sentence the player sees is unchanged.
+
+## v0.16.2
+- The Lance is the Arbiter TDC v18f hull (`art/source/arbiter-TDC_v18f.glb`, 43,432,072 bytes, SHA-256 `b53ecdcf45d4f302a01aa430a681064700e3ea46133c7cc1718646dfa3c4c742`). The v18d source is gone. The previous nodes and all 270 channels are still there. The four PDL-7 point-defence mounts are rebuilt as phased arrays: each has 90 raised deep-violet hex tiles in `PDL7_<Unit>_HexEmitters_Geo` under `PointDefence_PDL`, an octagon frame with flat iris blades, and a dark gunmetal plate. 335 nodes, 450,653 triangles. The name stays UEN Second Opinion, the class stays Coil Gun Frigate, and the Dagger and the Mars frigate are unchanged.
+- The hex tiles keep `MAT_PDL7_HexEmitter_Violet`. Its emission is the file's faint violet, peak about 0.06 with no strength multiplier, under the bloom threshold, so the tiles read violet and do not wash the hull. The faces point outward. The housing is still split into the nose and body fittings, so it keeps its shadow.
+
+## v0.16.1
+- The EO scope stays a live picture of the target in every battle view, including the tactical plot. The plot had stopped that small viewport from drawing while the panel kept showing its texture. As the track changed, the picture was resized into memory nothing had drawn into, so on a real GPU the scope filled with coloured noise. The main 3D view still stops rendering while the plot is up.
+- Unlimited no longer locks to the display. It had left vsync on, and a zero frame cap does not turn vsync off, so a 60 Hz screen stayed at 60. Unlimited now turns vsync off and sets no cap. Settings has a VSync switch, on by default, for the 60, 120 and 144 caps. A cap below the display still paces the frames with vsync off. The sim still steps at 10 Hz from the real frame time, and the picture still fills in between those steps.
+
+## v0.16.0
+- The Lance is the Arbiter TDC v18d hull (`art/source/arbiter-TDC_v18d.glb`, 43,320,360 bytes, SHA-256 `c80a2ab85d8fa68efaaa4a33aa6393e089863cf3e75eca3735207ca6e018425b`). The v17 source is gone. The previous nodes and all 270 channels are still there. Added on each laser head, under `Turret_0N_Pitch`: a secondary mirror face and an aperture glow ring. 331 nodes, 447,743 triangles. The name stays UEN Second Opinion, the class stays Coil Gun Frigate, and the Dagger and the Mars frigate are unchanged.
+- The laser ball shells are closed, and the bowls and mirrors face outward, so those meshes are drawn single-sided. The other housings stay double-sided. The primary mirror is the file's copper-gold, the secondary mirror is visible, and the glow ring inside the lip is held just over the bloom threshold so it halos without washing the frame. A reflection probe frozen at spawn, plus a small sun in the starfield, gives the copper something to reflect.
+
+## v0.15.2
+- The coilgun Earth ship is a Coil Gun Frigate. The nameplate subtitle reads COIL GUN FRIGATE, and the ship menu says UEN Second Opinion · Coil Gun Frigate. The name stays UEN Second Opinion. The Dagger and the Mars frigate are unchanged.
+
+## v0.15.1
+- The coilgun Earth's nameplate reads UEN Second Opinion. The ship-choice button, the watch-battle tip, the end screen and the after-action line use that name too. The Dagger and the Mars frigate keep theirs. The sim still calls that class Lance.
+
+## v0.15.0
+- The Lance is the Arbiter TDC v17 hull (`art/source/arbiter-TDC_v17.glb`, 42,519,712 bytes, SHA-256 `4a88817383a651731a900382aa99137efd86b88a877faf430a771147e876da62`). The v11 source is gone. The original 277 nodes and 174 channels are still there. Added on top: 44 ammo-feed nodes (the `RT0N_Flex_00`–`_07` bones, their rigs and the feed tips) and a dome on each rotary pitch node, 325 nodes and 270 channels in all. 417,764 triangles. The Dagger and the Mars frigate are unchanged.
+- TurretTrack is still not played. The rotary heads aim at the contact, and each feed bone follows that yaw and pitch (a straight-line fit of the clip) so the hose bends with the head and stops at the same arc. Those channels stay on TurretTrack; every other clip has them stripped.
+- The laser aperture sits inside the gold lip. OMS plumes are the file's alpha-blended gas, hidden until that pod fires, with the emissive strength capped so the bloom does not wash the frame. Hull decals, including the new atlas, import as Basis Universal with mipmaps. Mesh LODs stay off.
+
+## v0.14.0
+- The Lance is the Arbiter TDC v11 hull (`art/source/arbiter-TDC_v11.glb`, 40,927,736 bytes, SHA-256 `95cefa5402e785ae63ea9d458860a7d016ec62141048c5cd4d1f7189a78a0cd5`). The v8 source is gone. The 277 nodes, the 13 animation names and the 174 channels are unchanged, so the coilgun wave, the radiator seek, the aim snap and the clip-track strip from v0.13.2 still drive it. The Dagger and the Mars frigate are unchanged.
+- The laser aperture sits inside the gold and blue lip ring, and the turret ball is part of `Turret_01_Pitch`, `Turret_02_Pitch` and `Turret_03_Pitch`, which are the nodes the aim code already turns. Base colours are the file's. Meshes that already have weighted normals are not re-smoothed. Mesh LODs stay off, and the turret and sensor shells stay double-sided.
+- The fore-bottom OMS bell (A010) is shown when that pod fires. Its radial plume is authored at scale 0 and scaled up with the other bells. OMSBurn is still not the clip that runs.
+
+## v0.13.2
+- The coilgun wave and the barrel recoil play again. The charge seek had left the gun player at speed 0, so the firing clip never advanced. The coils are bright enough to bloom, and the bloom stays on the coil: the muzzle light is still the small one.
+- Radiators fold and deploy with the panel, including while the drive is burning. Godot's importer had put a rest key for every animated part into every clip, so the drive clip was holding the wings open. Each clip now moves only its own nodes.
+- Laser turrets and the sensor take the short arc and are already on the sim's aim at the first frame, so they do not unwind at spawn. A closing or opening burn no longer pins them: that was the same extra tracks, rewritten every frame the drive played.
+- Close range and open range are labelled with the thruster that does the work. Close range is the main drive along the nose (the forward OMS only if the nose is more than 30° off the enemy). Open range is the aft OMS, because the main drive cannot push backward. Left and right stay the lateral pods and still stack on a closing burn. There is no separate OMS mode.
+- Round housings are drawn double-sided, so a shell that was authored one-sided cannot show up open. The silhouette is still the low-poly mesh: a denser Arbiter can replace `art/source/arbiter-TDC_v8.glb` if it keeps the node names and the 13 animation names. `art/prepare_arbiter.py` checks that, smooths normals, and the import leaves mesh LODs off.
+
+## v0.13.1
+- The battle is drawn between the 10 Hz sim steps, so the hull, the enemy and rounds in flight no longer jump ten times a second when the frame rate is higher than the sim. Turret aim eases the same way. The attitude ball uses that in-between heading and roll.
+- The sensor picture updates every frame. It is a second, unshadowed copy of the enemy, so the feed is not a second set of shadow cascades hitching the main view. Text on the panels stays at 15 Hz.
+- A frame cap below the monitor's refresh turns vsync off. At or above the refresh, vsync stays on and the cap does not fight it. The first battle compiles the ship and effect shaders in a throwaway view, so the first shot or burn is not a compile hitch.
+- Settings has a frame-time counter, off by default. F4 switches it during a battle. It shows FPS, frame time in ms, a 1% low and a short graph.
+- The Lance's coil charge, muzzle flash and drive plume no longer bloom across the frame. Their lights are smaller and dimmer, and the imported emissive strengths (the throat was ×45, the strobes ×80) are capped. The ship and the HUD stay readable while the drive is burning.
+- OMS pods can fire during a main-drive burn. A and D during a closing burn add a strafe instead of cutting the drive. There was no physical ban; one order used to be either the drive or the pods. A pure sideways or braking burn is still pods only. The AI and the recorded battles are unchanged (idle still about 42 %, holding the range about 72 %).
+- The Lance's paints are the colours written in the material names (the file had left those factors white). Curved housings share normals across faces that meet more gently than 50°, and Godot no longer builds mesh LODs for this hull, which had been eating thin rings. The low-poly silhouette is the source mesh. The Dagger and the Mars frigate are unchanged.
+
+## v0.13.0
+- The Lance (laser and spinal coilgun) is drawn with the Arbiter TDC v8 hull. The Dagger keeps the previous Earth
+  model, and the Mars frigate is unchanged. The v8 clips for the radiator wings, the main drive, the coilgun
+  charge and firing, and the laser beams are driven from the battle. The sensor head tracks the enemy. The others
+  stay in the file.
+- The Lance's coilgun charges before it can fire. The first round waits 3 seconds (the charge clip's own length);
+  every round after that still waits the 18 second reload. The charge lights play across whichever wait is running
+  and finish as the gun becomes ready.
+- Settings has "Visible laser beams", off by default, and L switches them during a battle the way B switches the
+  dashed fire-control lines. On shows the Lance's beam meshes and a simple beam on the Dagger and the Mars frigate.
+- The Lance's idle view is 1,183 draw calls, down from 1,242. Static fittings that share a look were merged, and
+  lids, point-defence and effect meshes no longer cast shadows. The Dagger stays at 626. See docs/performance.md.
+
 ## v0.12.1
 - **Esc pauses the battle.** Esc in battle opens the menu with the fight frozen underneath, and a **Resume battle**
   button (or Esc again) takes you back exactly where you left off. Before, the menu offered no way back and the
